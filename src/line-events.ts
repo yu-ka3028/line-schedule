@@ -15,6 +15,7 @@ type LineEventBase = {
 
 export type LineTextMessageEvent = LineEventBase & {
   type: 'message';
+  replyToken: string;
   message: { id: string; type: 'text'; text: string };
 };
 
@@ -122,6 +123,7 @@ function parseEvent(value: unknown): LineEvent {
       return {
         ...base,
         type,
+        replyToken: requiredString(value.replyToken, 'replyToken'),
         message: {
           id: messageId,
           type: 'text',

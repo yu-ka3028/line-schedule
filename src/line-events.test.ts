@@ -19,6 +19,7 @@ describe('parseLineWebhookPayload', () => {
           {
             ...base,
             type: 'message',
+            replyToken: 'reply-1',
             message: { id: 'm-1', type: 'text', text: 'hello' },
           },
           {

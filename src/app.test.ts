@@ -123,6 +123,40 @@ describe('app', () => {
     });
   });
 
+  it('synchronously replies to a single user text event with a fake client', async () => {
+    process.env.LINE_CHANNEL_SECRET = dummySecret;
+    const body = JSON.stringify({
+      events: [
+        {
+          type: 'message',
+          replyToken: 'reply-token',
+          webhookEventId: 'text-event',
+          timestamp: 1710000000000,
+          source: { type: 'user', userId: 'U123' },
+          message: { id: 'message-1', type: 'text', text: 'do not echo' },
+        },
+      ],
+    });
+    const reply = vi.fn().mockResolvedValue('replied');
+    const usage = { record: vi.fn().mockResolvedValue(undefined) };
+    const response = await createApp(
+      { save: vi.fn().mockResolvedValue({ inserted: true }) },
+      { line: { replyClient: { reply }, usageLogs: usage } },
+    ).request('/webhooks/line', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-line-signature': sign(body),
+      },
+      body,
+    });
+    expect(response.status).toBe(200);
+    expect(reply).toHaveBeenCalledWith('reply-token', expect.any(Number));
+    expect(usage.record).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'replied' }),
+    );
+  });
+
   it('returns 500 without persistence details when storage fails', async () => {
     process.env.LINE_CHANNEL_SECRET = dummySecret;
     const store = {
