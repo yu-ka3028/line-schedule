@@ -27,8 +27,21 @@ import {
   parseLineWebhookPayload,
 } from './line-events.js';
 import { readBodyWithLimit, verifyLineSignature } from './line-signature.js';
+import {
+  createLineReplyClient,
+  type ReplyClient,
+} from './line-reply-client.js';
+import { processSyncText } from './sync-text-processor.js';
+import {
+  createSupabaseUsageLogStore,
+  type UsageLogStore,
+} from './usage-log-store.js';
 
 export type AppDependencies = {
+  line?: {
+    replyClient?: ReplyClient;
+    usageLogs?: UsageLogStore;
+  };
   qstash?: {
     config?: QstashConfig;
     verifier?: QstashSignatureVerifier;
@@ -42,6 +55,9 @@ export function createApp(
   dependencies: AppDependencies = {},
 ): Hono {
   const app = new Hono();
+  const seenTextEvents = new Map<string, number>();
+  const seenTextEventTtlMs = 10 * 60 * 1000;
+  const seenTextEventLimit = 1000;
 
   app.post('/webhooks/qstash/jobs', async (c) => {
     let config: QstashConfig;
@@ -140,6 +156,7 @@ export function createApp(
   app.get('/healthz', (c) => c.json({ ok: true }));
 
   app.post('/webhooks/line', async (c) => {
+    const webhookStartedAt = Date.now();
     const channelSecret = process.env.LINE_CHANNEL_SECRET;
     if (!channelSecret) {
       return c.json({ error: 'configuration_unavailable' }, 503);
@@ -192,11 +209,54 @@ export function createApp(
       })();
     if (!eventStore) return c.json({ error: 'configuration_unavailable' }, 503);
 
+    const persistenceStarted = performance.now();
+    let saveResult;
     try {
-      await eventStore.save(payload);
+      saveResult = await eventStore.save(payload);
     } catch {
       // Do not expose persistence details or event contents to the caller.
       return c.json({ error: 'persistence_unavailable' }, 500);
+    }
+
+    const candidate = payload.events[0];
+    const persistenceMs = Math.max(
+      0,
+      Math.round(performance.now() - persistenceStarted),
+    );
+    const textEvent =
+      payload.events.length === 1 &&
+      candidate?.type === 'message' &&
+      (candidate.message as { type?: string }).type === 'text' &&
+      candidate.source.type === 'user'
+        ? (candidate as import('./line-events.js').LineTextMessageEvent)
+        : undefined;
+    if (textEvent && saveResult?.inserted === true) {
+      const now = Date.now();
+      for (const [eventId, seenAt] of seenTextEvents) {
+        if (now - seenAt >= seenTextEventTtlMs) seenTextEvents.delete(eventId);
+      }
+      if (seenTextEvents.has(textEvent.webhookEventId))
+        return c.json({ ok: true }, 200);
+      while (seenTextEvents.size >= seenTextEventLimit) {
+        const oldestEventId = seenTextEvents.keys().next().value;
+        if (oldestEventId === undefined) break;
+        seenTextEvents.delete(oldestEventId);
+      }
+      seenTextEvents.set(textEvent.webhookEventId, now);
+      let usageLogs = dependencies.line?.usageLogs;
+      if (!usageLogs) {
+        try {
+          usageLogs = createSupabaseUsageLogStore();
+        } catch {
+          usageLogs = undefined;
+        }
+      }
+      await processSyncText(textEvent, {
+        replyClient: dependencies.line?.replyClient ?? createLineReplyClient(),
+        usageLogs,
+        deadlineAt: webhookStartedAt + 800,
+        persistenceMs,
+      });
     }
 
     return c.json({ ok: true }, 200);

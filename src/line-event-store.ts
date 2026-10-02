@@ -5,8 +5,10 @@ import { encryptWebhookPayload } from './crypto.js';
 import type { LineEvent, LineWebhookPayload } from './line-events.js';
 import { createSupabaseAdminClient } from './supabase-admin.js';
 
+export type LineEventSaveResult = { inserted: boolean };
+
 export interface LineEventStore {
-  save(payload: LineWebhookPayload): Promise<void>;
+  save(payload: LineWebhookPayload): Promise<LineEventSaveResult>;
 }
 
 function messageType(event: LineEvent): string {
@@ -16,13 +18,26 @@ function messageType(event: LineEvent): string {
   return event.type;
 }
 
+function persistenceEvent(event: LineEvent): LineEvent {
+  if (
+    event.type === 'message' &&
+    (event.message as { type?: string }).type === 'text'
+  ) {
+    const safeEvent = { ...event } as LineEvent & { replyToken?: string };
+    delete safeEvent.replyToken;
+    return safeEvent;
+  }
+  return event;
+}
+
 export class SupabaseLineEventStore implements LineEventStore {
   constructor(
     private readonly client: SupabaseClient,
     private readonly encryptionKey: Buffer,
   ) {}
 
-  async save(payload: LineWebhookPayload): Promise<void> {
+  async save(payload: LineWebhookPayload): Promise<LineEventSaveResult> {
+    let inserted = false;
     // Each event is encrypted independently. This intentionally does not persist
     // the raw webhook body, which may contain unrelated users or group/room data.
     for (const event of payload.events) {
@@ -38,22 +53,27 @@ export class SupabaseLineEventStore implements LineEventStore {
         .single();
       if (userResult.error) throw userResult.error;
 
-      const eventResult = await this.client.from('inbound_events').upsert(
-        {
-          user_id: userResult.data.id,
-          line_event_id: event.webhookEventId,
-          message_type: messageType(event),
-          payload_ciphertext: encryptWebhookPayload(
-            JSON.stringify(event),
-            this.encryptionKey,
-          ),
-        },
-        { onConflict: 'line_event_id', ignoreDuplicates: true },
-      );
+      const eventResult = await this.client
+        .from('inbound_events')
+        .upsert(
+          {
+            user_id: userResult.data.id,
+            line_event_id: event.webhookEventId,
+            message_type: messageType(event),
+            payload_ciphertext: encryptWebhookPayload(
+              JSON.stringify(persistenceEvent(event)),
+              this.encryptionKey,
+            ),
+          },
+          { onConflict: 'line_event_id', ignoreDuplicates: true },
+        )
+        .select('id');
+      if (!eventResult.error && eventResult.data?.length) inserted = true;
       // ignoreDuplicates applies specifically to the line_event_id conflict
       // target; all other persistence errors remain failures.
       if (eventResult.error) throw eventResult.error;
     }
+    return { inserted };
   }
 }
 

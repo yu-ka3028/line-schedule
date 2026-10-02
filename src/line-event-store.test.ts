@@ -14,7 +14,13 @@ function createClientMock() {
         .mockResolvedValue({ data: { id: 'user-row-1' }, error: null }),
     })),
   }));
-  const eventUpsert = vi.fn().mockResolvedValue({ data: null, error: null });
+  const eventUpsert = vi
+    .fn<(...args: unknown[]) => { select: () => Promise<unknown> }>()
+    .mockImplementation(() => ({
+      select: vi
+        .fn()
+        .mockResolvedValue({ data: [{ id: 'event-row-1' }], error: null }),
+    }));
   const client = {
     from: vi.fn((table: string) => {
       if (table === 'users') return { upsert: userUpsert };
@@ -35,6 +41,7 @@ describe('SupabaseLineEventStore', () => {
       webhookEventId: 'event-user',
       timestamp: 1710000000000,
       source: { type: 'user' as const, userId: 'U123' },
+      replyToken: 'reply-token',
       message: { id: 'message-1', type: 'text' as const, text: 'private text' },
     };
 
@@ -61,7 +68,10 @@ describe('SupabaseLineEventStore', () => {
       { onConflict: 'line_user_id' },
     );
     expect(eventUpsert).toHaveBeenCalledOnce();
-    const [row, options] = eventUpsert.mock.calls[0];
+    const [row, options] = eventUpsert.mock.calls[0] as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ];
     expect(row).toMatchObject({
       user_id: 'user-row-1',
       line_event_id: 'event-user',
@@ -72,19 +82,50 @@ describe('SupabaseLineEventStore', () => {
       ignoreDuplicates: true,
     });
     expect(row.payload_ciphertext).not.toContain('private text');
-    expect(
-      JSON.parse(decryptWebhookPayload(row.payload_ciphertext, key)),
-    ).toEqual(userEvent);
+    const persisted = JSON.parse(
+      decryptWebhookPayload(row.payload_ciphertext as string, key),
+    );
+    expect(persisted).toEqual({
+      webhookEventId: userEvent.webhookEventId,
+      timestamp: userEvent.timestamp,
+      source: userEvent.source,
+      type: userEvent.type,
+      message: userEvent.message,
+    });
+    expect(persisted).not.toHaveProperty('replyToken');
     expect(row.payload_ciphertext).not.toContain('event-group');
     expect(row.payload_ciphertext).not.toContain('C123');
     expect(row.payload_ciphertext).not.toContain('event-room');
     expect(row.payload_ciphertext).not.toContain('R123');
   });
 
+  it('reports inserted false when insert data is empty', async () => {
+    const { client, eventUpsert } = createClientMock();
+    eventUpsert.mockReturnValue({
+      select: vi.fn().mockResolvedValue({ data: [], error: null }),
+    });
+    const store = new SupabaseLineEventStore(client, randomBytes(32));
+
+    await expect(
+      store.save({
+        events: [
+          {
+            type: 'follow',
+            webhookEventId: 'event-duplicate',
+            timestamp: 1710000000000,
+            source: { type: 'user', userId: 'U123' },
+          },
+        ],
+      }),
+    ).resolves.toEqual({ inserted: false });
+  });
+
   it('propagates non-duplicate insert errors', async () => {
     const { client, eventUpsert } = createClientMock();
     const error = { code: '42501', message: 'permission denied' };
-    eventUpsert.mockResolvedValue({ data: null, error });
+    eventUpsert.mockReturnValue({
+      select: vi.fn().mockResolvedValue({ data: null, error }),
+    });
     const store = new SupabaseLineEventStore(client, randomBytes(32));
 
     await expect(

@@ -46,15 +46,15 @@ npm run build
 
 - `src/app.ts`: Hono アプリ本体
 - `api/[[...route]].ts`: Vercel Functions のエントリポイント
-- `POST /webhooks/line`: 署名・入力検証後、ユーザー由来イベントをSupabaseへ冪等保存する
+- `POST /webhooks/line`: 署名・入力検証後、ユーザー由来イベントをSupabaseへ冪等保存する。単一のuser由来textイベントだけは保存後に固定文言を同期Replyし、処理時間をbest-effortでusage_logsへ記録する
 - Supabase service role、本文暗号化、イベント保存を実装済み。QStashは署名検証・ジョブ状態管理の安全な骨格を実装済み
 
 ## 未実装範囲
 
-- LINE Webhook の業務イベント処理、返信（受信イベントの冪等保存は実装済み）
-- Supabase実環境への接続確認（単体テストは外部接続なし）
+- LINE Webhook の業務イベント処理（現時点の同期対象は単一user/textのみ。group/room、非text、複数イベントはReplyしない）
+- Supabase実環境への接続確認（単体テストは外部接続なし）、実LINE送信確認。同期処理の実測値は実LINE channel access tokenで未確認
 - グループ・ルームイベントの個人登録（MVPでは保存対象外）
-- QStashのpublish、Calendar実処理、実環境でのジョブ実行確認
+- QStashのpublish、Calendar実処理、実環境でのジョブ実行確認。同期処理からQStashへ切り替える判断は実測したusage_logsの処理時間・Reply結果を確認してから行う
 - Google OAuth、トークン保管、Google Calendar 連携
 - エラー監視、レート制限、リプレイ対策、運用設定
 
@@ -63,6 +63,10 @@ npm run build
 署名検証なしにWebhook本文を処理する実装は追加しないでください。現在は検証成功後に入力検証と冪等保存を行い、成功時は200、入力不正は400、永続化失敗は詳細を含めず500で応答します。LINE_CHANNEL_SECRET、Supabase接続情報、暗号化鍵の未設定は503、署名不正・欠落は401で応答します。ユーザーsourceイベントのみ、イベント単体のJSONを `WEBHOOK_PAYLOAD_ENCRYPTION_KEY`（base64の32バイト鍵）によるAES-256-GCM暗号文として保存します。Webhook全体は保存せず、group/roomや別userイベントを同じ暗号文に含めません。`SUPABASE_SERVICE_ROLE_KEY` はサーバー側だけで使い、anon keyで書き込みません。本文は署名検証前にJSONとして解釈しません。実Supabase接続はまだ確認していません。
 
 Webhook本文は最大1 MiB、1回のWebhookに含められるイベント数は最大100件です。複数イベントの保存は現時点ではイベント単位の逐次処理であり、途中失敗時に一部だけ保存される非原子的な動作です。将来、必要に応じて複数イベント保存をRPCなどで原子化してください。
+
+同期text ReplyのdeadlineはWebhook受付開始時刻から800msで、永続化時間の後にさらに800ms待つことはありません。deadline超過時やReply不能時もWebhookはHTTP 200を返します。usage_logsへの記録は残りdeadlineまたは最大100msのbest-effortで、失敗・timeoutは応答を変更しません。重複イベントは永続化の `inserted: false` とプロセス内のTTL（10分）・上限（1000件）の抑止でReplyしません。`LineEventStore.save()` の結果が `{ inserted: true }` と明確でない場合も安全側にReplyしません。抑止MapにはイベントIDのみを一時的に保持し、本文・replyToken・外部応答本文は保存しません。
+
+`LineEventStore.save()` 全体のtimeoutは未実装です。保存前に200を返してデータ欠落を招かないため、現状は保存処理が完了または失敗するまで待ち、失敗時は500を返します。安全なtimeoutと部分保存・retry semanticsの設計は残課題です。
 
 ## 次の実装順
 
@@ -82,7 +86,7 @@ supabase db push
 
 このマイグレーションはまだ実行していません。全テーブルでRLSを有効にし、MVPではクライアント向けpolicyを作成していないため、アクセスはbackendのservice role接続に限定されます。service role keyをクライアントへ渡さないでください。
 
-`inbound_events.payload_ciphertext` は、LINEイベントの本文・画像・イベント内容をアプリケーション側で暗号化した暗号文の保存先です。暗号化、鍵管理、復号はアプリケーション実装が必要であり、このSQL自体は暗号化を行いません。`usage_logs.metadata` に秘密情報や本文・イベント内容を保存しないでください。
+`inbound_events.payload_ciphertext` は、LINEイベントの本文・画像・イベント内容をアプリケーション側で暗号化した暗号文の保存先です。暗号化、鍵管理、復号はアプリケーション実装が必要であり、このSQL自体は暗号化を行いません。`usage_logs.metadata` に秘密情報や本文・イベント内容を保存しないでください。同期計測metadataはschema_version、固定outcome、total_ms、persistence_ms、reply_msだけです。replyTokenはDB・暗号化payload・usage/logへ保存せず、実行時だけ保持します。LINE_CHANNEL_ACCESS_TOKEN未設定時はReplyを実行せず、保存後に200を返します。保存成功後のReply失敗・timeoutも200です。
 
 ## QStash jobs
 
