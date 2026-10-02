@@ -48,6 +48,35 @@ describe('QStash jobs webhook', () => {
     expect(jobs.claim).not.toHaveBeenCalled();
   });
 
+  it('maps a verifier throw to 401 before parsing, storing, or executing', async () => {
+    const jobs = store();
+    const executor = vi.fn();
+    const verify = vi.fn().mockRejectedValue(new Error('invalid signature'));
+    const response = await app(jobs, verify, executor).request(
+      '/webhooks/qstash/jobs',
+      request('{invalid'),
+    );
+    expect(response.status).toBe(401);
+    expect(jobs.claim).not.toHaveBeenCalled();
+    expect(executor).not.toHaveBeenCalled();
+  });
+
+  it.each(['busy', 'not_due', 'not_found', 'inactive', 'expired'] as const)(
+    'handles %s without executing',
+    async (outcome) => {
+      const jobs = store({ claim: vi.fn().mockResolvedValue({ outcome }) });
+      const executor = vi.fn();
+      const response = await app(jobs, undefined, executor).request(
+        '/webhooks/qstash/jobs',
+        request(),
+      );
+      expect(response.status).toBe(
+        outcome === 'busy' || outcome === 'not_due' ? 500 : 200,
+      );
+      expect(executor).not.toHaveBeenCalled();
+    },
+  );
+
   it('does not execute terminal jobs', async () => {
     const jobs = store();
     const executor = vi.fn();

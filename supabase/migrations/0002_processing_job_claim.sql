@@ -4,12 +4,15 @@ alter table public.processing_jobs
 
 create or replace function public.claim_processing_job(p_job_id uuid)
 returns table(outcome text, processing_token uuid)
-language plpgsql security definer set search_path = public
+language plpgsql security definer set search_path = public, pg_temp
 as $$
-declare j public.processing_jobs%rowtype; t uuid := gen_random_uuid();
+declare j public.processing_jobs%rowtype; t uuid := extensions.gen_random_uuid();
 begin
   select * into j from public.processing_jobs where id = p_job_id for update;
   if not found then return query select 'not_found'::text, null::uuid; return; end if;
+  if j.expires_at is not null and j.expires_at <= now() then
+    return query select 'expired'::text, null::uuid; return;
+  end if;
   if not exists (select 1 from public.users u where u.id = j.user_id and u.status = 'active') then
     return query select 'inactive'::text, null::uuid; return;
   end if;
@@ -29,7 +32,7 @@ begin
 end; $$;
 
 create or replace function public.succeed_processing_job(p_job_id uuid, p_processing_token uuid)
-returns table(outcome text) language plpgsql security definer set search_path = public as $$
+returns table(outcome text) language plpgsql security definer set search_path = public, pg_temp as $$
 begin
   update public.processing_jobs set status = 'succeeded', processing_token = null, processing_lease_expires_at = null
     where id = p_job_id and status = 'processing' and processing_token = p_processing_token;
@@ -37,7 +40,7 @@ begin
 end; $$;
 
 create or replace function public.fail_or_requeue_processing_job(p_job_id uuid, p_processing_token uuid, p_error text)
-returns table(outcome text) language plpgsql security definer set search_path = public as $$
+returns table(outcome text) language plpgsql security definer set search_path = public, pg_temp as $$
 declare a integer;
 begin
   select attempts into a from public.processing_jobs where id = p_job_id and status = 'processing' and processing_token = p_processing_token for update;
@@ -46,7 +49,8 @@ begin
     update public.processing_jobs set status = 'failed', last_error = left(p_error, 200), processing_token = null, processing_lease_expires_at = null where id = p_job_id;
     return query select 'failed'::text;
   end if;
-  update public.processing_jobs set status = 'queued', available_at = now() + interval '1 minute', last_error = left(p_error, 200), processing_token = null, processing_lease_expires_at = null where id = p_job_id;
+  -- The HTTP 500 lets QStash apply its own retry backoff; do not add a DB delay.
+  update public.processing_jobs set status = 'queued', available_at = now(), last_error = left(p_error, 200), processing_token = null, processing_lease_expires_at = null where id = p_job_id;
   return query select 'requeued'::text;
 end; $$;
 

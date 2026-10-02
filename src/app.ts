@@ -72,8 +72,13 @@ export function createApp(
     }
     const verifier =
       dependencies.qstash?.verifier ?? createQstashSignatureVerifier(config);
-    if (!(await verifier.verify(body, signature)))
+    try {
+      if (!(await verifier.verify(body, signature)))
+        return c.json({ error: 'invalid_signature' }, 401);
+    } catch {
+      // Receiver.verify throws for malformed or invalid QStash signatures.
       return c.json({ error: 'invalid_signature' }, 401);
+    }
     let job;
     try {
       job = parseProcessingJobPayload(JSON.parse(body));
@@ -96,12 +101,15 @@ export function createApp(
     }
     if (
       claim.outcome === 'terminal' ||
+      claim.outcome === 'expired' ||
       claim.outcome === 'not_found' ||
       claim.outcome === 'inactive'
     )
       return c.json({ ok: true }, 200);
     if (claim.outcome === 'busy' || claim.outcome === 'not_due' || !claim.token)
       return c.json({ error: 'job_not_ready' }, 500);
+    // Calendar execution is intentionally unavailable until the handler is implemented.
+    // Failing safely keeps the job retryable instead of falsely marking it succeeded.
     const executor =
       dependencies.qstash?.executor ??
       (async () => {

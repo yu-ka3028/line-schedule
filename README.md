@@ -91,6 +91,11 @@ The QStash receiver requires `QSTASH_CURRENT_SIGNING_KEY`,
 `/webhooks/qstash/jobs` URL). The payload is only `{ "jobId": "<UUID>" }`.
 Apply `supabase/migrations/0002_processing_job_claim.sql` before enabling this
 endpoint; the migration is not applied by this repository. Calendar execution
-and QStash publishing are not implemented yet, so the default executor fails
-safely and leaves jobs retryable. Production deployment also needs rate
-limiting in front of the endpoint.
+and QStash publishing are not implemented yet. The route contains an intentional
+safe scaffold: its default executor fails closed, never marks an unimplemented
+Calendar job as succeeded, and requeues it. After a successful DB requeue, the
+route returns HTTP 500 so QStash redelivers the message; the migration sets
+`available_at` to `now()` to avoid a DB `not_due` response, so retry timing is
+controlled by QStash retry/backoff settings. If the DB cannot confirm the
+requeue outcome, the route also returns 500. Production deployment must configure
+an appropriate QStash retry policy and rate limiting in front of the endpoint.
