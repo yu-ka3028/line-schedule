@@ -38,6 +38,7 @@ const validBody = JSON.stringify({
 
 afterEach(() => {
   delete process.env.LINE_CHANNEL_SECRET;
+  delete process.env.LINE_CHANNEL_ACCESS_TOKEN;
 });
 
 describe('app', () => {
@@ -155,6 +156,109 @@ describe('app', () => {
     expect(usage.record).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: 'replied' }),
     );
+  });
+
+  it('does not reply when persistence reports a duplicate insert', async () => {
+    process.env.LINE_CHANNEL_SECRET = dummySecret;
+    const body = JSON.stringify({
+      events: [
+        {
+          type: 'message',
+          replyToken: 'reply-token',
+          webhookEventId: 'duplicate-event',
+          timestamp: 1710000000000,
+          source: { type: 'user', userId: 'U123' },
+          message: { id: 'message-1', type: 'text', text: 'private' },
+        },
+      ],
+    });
+    const reply = vi.fn().mockResolvedValue('replied');
+    const response = await createApp(
+      { save: vi.fn().mockResolvedValue({ inserted: false }) },
+      { line: { replyClient: { reply } } },
+    ).request('/webhooks/line', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-line-signature': sign(body),
+      },
+      body,
+    });
+    expect(response.status).toBe(200);
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it('suppresses repeated and concurrent replies for the same event', async () => {
+    process.env.LINE_CHANNEL_SECRET = dummySecret;
+    const body = JSON.stringify({
+      events: [
+        {
+          type: 'message',
+          replyToken: 'reply-token',
+          webhookEventId: 'same-event',
+          timestamp: 1710000000000,
+          source: { type: 'user', userId: 'U123' },
+          message: { id: 'message-1', type: 'text', text: 'private' },
+        },
+      ],
+    });
+    const reply = vi.fn().mockResolvedValue('replied');
+    const app = createApp(
+      { save: vi.fn().mockResolvedValue({ inserted: true }) },
+      { line: { replyClient: { reply } } },
+    );
+    const init = {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-line-signature': sign(body),
+      },
+      body,
+    } as const;
+    const responses = await Promise.all([
+      app.request('/webhooks/line', init),
+      app.request('/webhooks/line', init),
+    ]);
+    expect(responses.every((response) => response.status === 200)).toBe(true);
+    expect(reply).toHaveBeenCalledOnce();
+
+    await app.request('/webhooks/line', init);
+    expect(reply).toHaveBeenCalledOnce();
+  });
+
+  it('returns 200 when usage or reply fails', async () => {
+    process.env.LINE_CHANNEL_SECRET = dummySecret;
+    const body = JSON.stringify({
+      events: [
+        {
+          type: 'message',
+          replyToken: 'reply-token',
+          webhookEventId: 'failed-event',
+          timestamp: 1710000000000,
+          source: { type: 'user', userId: 'U123' },
+          message: { id: 'message-1', type: 'text', text: 'private' },
+        },
+      ],
+    });
+    const response = await createApp(
+      { save: vi.fn().mockResolvedValue({ inserted: true }) },
+      {
+        line: {
+          replyClient: { reply: vi.fn().mockResolvedValue('timeout') },
+          usageLogs: {
+            record: vi.fn().mockRejectedValue(new Error('telemetry')),
+          },
+        },
+      },
+    ).request('/webhooks/line', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-line-signature': sign(body),
+      },
+      body,
+    });
+    expect(response.status).toBe(200);
   });
 
   it('returns 500 without persistence details when storage fails', async () => {

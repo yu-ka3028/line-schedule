@@ -10,6 +10,7 @@ export type SyncTextDependencies = {
   usageLogs?: UsageLogStore;
   now?: () => number;
   deadlineMs?: number;
+  deadlineAt?: number;
   persistenceMs?: number;
 };
 
@@ -23,7 +24,8 @@ export async function processSyncText(
   const started = now();
   if (!event || event.source.type !== 'user') return 'skipped';
 
-  const deadline = Date.now() + (dependencies.deadlineMs ?? 800);
+  const deadline =
+    dependencies.deadlineAt ?? Date.now() + (dependencies.deadlineMs ?? 800);
   let replyOutcome: ReplyOutcome = 'error';
   const replyStarted = now();
   try {

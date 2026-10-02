@@ -37,6 +37,19 @@ describe('processSyncText', () => {
     });
   });
 
+  it('passes an absolute deadline without extending it for persistence', async () => {
+    const reply = vi.fn().mockResolvedValue('timeout');
+    const deadlineAt = Date.now() - 1;
+
+    await processSyncText(event, {
+      replyClient: { reply },
+      deadlineAt,
+      persistenceMs: 900,
+    });
+
+    expect(reply).toHaveBeenCalledWith('short-lived-token', deadlineAt);
+  });
+
   it.each(['reply_unavailable', 'timeout', 'error'] as const)(
     'preserves HTTP-safe outcome %s',
     async (replyOutcome) => {

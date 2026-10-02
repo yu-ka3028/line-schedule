@@ -52,7 +52,7 @@ npm run build
 ## 未実装範囲
 
 - LINE Webhook の業務イベント処理（現時点の同期対象は単一user/textのみ。group/room、非text、複数イベントはReplyしない）
-- Supabase実環境への接続確認（単体テストは外部接続なし）、実LINE送信確認
+- Supabase実環境への接続確認（単体テストは外部接続なし）、実LINE送信確認。同期処理の実測値は実LINE channel access tokenで未確認
 - グループ・ルームイベントの個人登録（MVPでは保存対象外）
 - QStashのpublish、Calendar実処理、実環境でのジョブ実行確認。同期処理からQStashへ切り替える判断は実測したusage_logsの処理時間・Reply結果を確認してから行う
 - Google OAuth、トークン保管、Google Calendar 連携
@@ -63,6 +63,8 @@ npm run build
 署名検証なしにWebhook本文を処理する実装は追加しないでください。現在は検証成功後に入力検証と冪等保存を行い、成功時は200、入力不正は400、永続化失敗は詳細を含めず500で応答します。LINE_CHANNEL_SECRET、Supabase接続情報、暗号化鍵の未設定は503、署名不正・欠落は401で応答します。ユーザーsourceイベントのみ、イベント単体のJSONを `WEBHOOK_PAYLOAD_ENCRYPTION_KEY`（base64の32バイト鍵）によるAES-256-GCM暗号文として保存します。Webhook全体は保存せず、group/roomや別userイベントを同じ暗号文に含めません。`SUPABASE_SERVICE_ROLE_KEY` はサーバー側だけで使い、anon keyで書き込みません。本文は署名検証前にJSONとして解釈しません。実Supabase接続はまだ確認していません。
 
 Webhook本文は最大1 MiB、1回のWebhookに含められるイベント数は最大100件です。複数イベントの保存は現時点ではイベント単位の逐次処理であり、途中失敗時に一部だけ保存される非原子的な動作です。将来、必要に応じて複数イベント保存をRPCなどで原子化してください。
+
+同期text ReplyのdeadlineはWebhook受付開始時刻から800msで、永続化時間の後にさらに800ms待つことはありません。deadline超過時やReply不能時もWebhookはHTTP 200を返します。重複イベントは永続化の `inserted: false` とプロセス内のTTL（10分）・上限（1000件）の抑止でReplyしません。抑止MapにはイベントIDのみを一時的に保持し、本文・replyToken・外部応答本文は保存しません。
 
 ## 次の実装順
 

@@ -55,7 +55,9 @@ export function createApp(
   dependencies: AppDependencies = {},
 ): Hono {
   const app = new Hono();
-  const seenTextEvents = new Set<string>();
+  const seenTextEvents = new Map<string, number>();
+  const seenTextEventTtlMs = 10 * 60 * 1000;
+  const seenTextEventLimit = 1000;
 
   app.post('/webhooks/qstash/jobs', async (c) => {
     let config: QstashConfig;
@@ -154,6 +156,7 @@ export function createApp(
   app.get('/healthz', (c) => c.json({ ok: true }));
 
   app.post('/webhooks/line', async (c) => {
+    const webhookStartedAt = Date.now();
     const channelSecret = process.env.LINE_CHANNEL_SECRET;
     if (!channelSecret) {
       return c.json({ error: 'configuration_unavailable' }, 503);
@@ -227,12 +230,19 @@ export function createApp(
       candidate.source.type === 'user'
         ? (candidate as import('./line-events.js').LineTextMessageEvent)
         : undefined;
-    if (
-      textEvent &&
-      saveResult?.inserted !== false &&
-      !seenTextEvents.has(textEvent.webhookEventId)
-    ) {
-      seenTextEvents.add(textEvent.webhookEventId);
+    if (textEvent && saveResult?.inserted !== false) {
+      const now = Date.now();
+      for (const [eventId, seenAt] of seenTextEvents) {
+        if (now - seenAt >= seenTextEventTtlMs) seenTextEvents.delete(eventId);
+      }
+      if (seenTextEvents.has(textEvent.webhookEventId))
+        return c.json({ ok: true }, 200);
+      while (seenTextEvents.size >= seenTextEventLimit) {
+        const oldestEventId = seenTextEvents.keys().next().value;
+        if (oldestEventId === undefined) break;
+        seenTextEvents.delete(oldestEventId);
+      }
+      seenTextEvents.set(textEvent.webhookEventId, now);
       let usageLogs = dependencies.line?.usageLogs;
       if (!usageLogs) {
         try {
@@ -244,7 +254,7 @@ export function createApp(
       await processSyncText(textEvent, {
         replyClient: dependencies.line?.replyClient ?? createLineReplyClient(),
         usageLogs,
-        deadlineMs: 800,
+        deadlineAt: webhookStartedAt + 800,
         persistenceMs,
       });
     }

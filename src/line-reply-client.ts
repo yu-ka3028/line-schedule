@@ -33,7 +33,10 @@ export function createLineReplyClient(): ReplyClient {
         if (Date.now() >= deadline) return 'timeout';
         return response.ok ? 'replied' : 'error';
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'TimeoutError')
+        if (
+          error instanceof DOMException &&
+          (error.name === 'TimeoutError' || error.name === 'AbortError')
+        )
           return 'timeout';
         return 'error';
       }

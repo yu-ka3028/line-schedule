@@ -99,6 +99,27 @@ describe('SupabaseLineEventStore', () => {
     expect(row.payload_ciphertext).not.toContain('R123');
   });
 
+  it('reports inserted false when insert data is empty', async () => {
+    const { client, eventUpsert } = createClientMock();
+    eventUpsert.mockReturnValue({
+      select: vi.fn().mockResolvedValue({ data: [], error: null }),
+    });
+    const store = new SupabaseLineEventStore(client, randomBytes(32));
+
+    await expect(
+      store.save({
+        events: [
+          {
+            type: 'follow',
+            webhookEventId: 'event-duplicate',
+            timestamp: 1710000000000,
+            source: { type: 'user', userId: 'U123' },
+          },
+        ],
+      }),
+    ).resolves.toEqual({ inserted: false });
+  });
+
   it('propagates non-duplicate insert errors', async () => {
     const { client, eventUpsert } = createClientMock();
     const error = { code: '42501', message: 'permission denied' };
