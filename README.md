@@ -47,14 +47,14 @@ npm run build
 - `src/app.ts`: Hono アプリ本体
 - `api/[[...route]].ts`: Vercel Functions のエントリポイント
 - `POST /webhooks/line`: 署名・入力検証後、ユーザー由来イベントをSupabaseへ冪等保存する
-- Supabase service role、本文暗号化、イベント保存を実装済み。QStash / Google / LINE SDKは将来利用する
+- Supabase service role、本文暗号化、イベント保存を実装済み。QStashは署名検証・ジョブ状態管理の安全な骨格を実装済み
 
 ## 未実装範囲
 
 - LINE Webhook の業務イベント処理、返信（受信イベントの冪等保存は実装済み）
 - Supabase実環境への接続確認（単体テストは外部接続なし）
 - グループ・ルームイベントの個人登録（MVPでは保存対象外）
-- QStash の署名検証とジョブ処理
+- QStashのpublish、Calendar実処理、実環境でのジョブ実行確認
 - Google OAuth、トークン保管、Google Calendar 連携
 - エラー監視、レート制限、リプレイ対策、運用設定
 
@@ -83,3 +83,7 @@ supabase db push
 このマイグレーションはまだ実行していません。全テーブルでRLSを有効にし、MVPではクライアント向けpolicyを作成していないため、アクセスはbackendのservice role接続に限定されます。service role keyをクライアントへ渡さないでください。
 
 `inbound_events.payload_ciphertext` は、LINEイベントの本文・画像・イベント内容をアプリケーション側で暗号化した暗号文の保存先です。暗号化、鍵管理、復号はアプリケーション実装が必要であり、このSQL自体は暗号化を行いません。`usage_logs.metadata` に秘密情報や本文・イベント内容を保存しないでください。
+
+## QStash jobs
+
+QStash受信側の安全な骨格を実装済みです。詳細、必要な設定、migration適用条件、未実装範囲は[QStashジョブ処理の設計メモ](docs/qstash-jobs.md)を参照してください。
