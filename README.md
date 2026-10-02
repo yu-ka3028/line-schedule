@@ -83,3 +83,14 @@ supabase db push
 このマイグレーションはまだ実行していません。全テーブルでRLSを有効にし、MVPではクライアント向けpolicyを作成していないため、アクセスはbackendのservice role接続に限定されます。service role keyをクライアントへ渡さないでください。
 
 `inbound_events.payload_ciphertext` は、LINEイベントの本文・画像・イベント内容をアプリケーション側で暗号化した暗号文の保存先です。暗号化、鍵管理、復号はアプリケーション実装が必要であり、このSQL自体は暗号化を行いません。`usage_logs.metadata` に秘密情報や本文・イベント内容を保存しないでください。
+
+## QStash jobs
+
+The QStash receiver requires `QSTASH_CURRENT_SIGNING_KEY`,
+`QSTASH_NEXT_SIGNING_KEY`, and `QSTASH_JOB_RECEIVER_URL` (the fixed
+`/webhooks/qstash/jobs` URL). The payload is only `{ "jobId": "<UUID>" }`.
+Apply `supabase/migrations/0002_processing_job_claim.sql` before enabling this
+endpoint; the migration is not applied by this repository. Calendar execution
+and QStash publishing are not implemented yet, so the default executor fails
+safely and leaves jobs retryable. Production deployment also needs rate
+limiting in front of the endpoint.
