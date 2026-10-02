@@ -33,9 +33,17 @@ export function readSupabaseConfig(): { url: string; serviceRoleKey: string } {
   const url = requiredEnvironment('SUPABASE_URL');
   try {
     const parsed = new URL(url);
-    const isLocalHttp =
-      parsed.protocol === 'http:' && parsed.hostname === 'localhost';
-    if (parsed.protocol !== 'https:' && !isLocalHttp) {
+    const isSupabaseCloud = /^[^.]+\.supabase\.co$/.test(parsed.hostname);
+    const isLocalhost = parsed.hostname === 'localhost';
+    const hasCredentials = parsed.username !== '' || parsed.password !== '';
+    const validProtocol =
+      parsed.protocol === 'https:' ||
+      (parsed.protocol === 'http:' && isLocalhost);
+    if (
+      !validProtocol ||
+      (!isSupabaseCloud && !isLocalhost) ||
+      hasCredentials
+    ) {
       throw new Error();
     }
   } catch {

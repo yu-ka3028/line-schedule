@@ -86,6 +86,23 @@ describe('app', () => {
     expect(response.status).toBe(400);
   });
 
+  it('accepts a case-insensitive JSON content type', async () => {
+    process.env.LINE_CHANNEL_SECRET = dummySecret;
+    const response = await createApp({ save: vi.fn() }).request(
+      '/webhooks/line',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'Application/JSON; charset=utf-8',
+          'x-line-signature': sign(validBody),
+        },
+        body: validBody,
+      },
+    );
+
+    expect(response.status).toBe(200);
+  });
+
   it('stores a valid payload and returns 200', async () => {
     process.env.LINE_CHANNEL_SECRET = dummySecret;
     const store = {

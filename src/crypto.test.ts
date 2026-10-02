@@ -22,4 +22,13 @@ describe('webhook payload encryption', () => {
 
     expect(() => decryptWebhookPayload(parts.join('.'), key)).toThrow();
   });
+
+  it('rejects ciphertexts with extra segments', () => {
+    const key = randomBytes(32);
+    const encrypted = encryptWebhookPayload('payload', key);
+
+    expect(() => decryptWebhookPayload(`${encrypted}.extra`, key)).toThrow(
+      'Invalid encrypted payload format',
+    );
+  });
 });

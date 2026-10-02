@@ -27,7 +27,11 @@ export function createApp(store?: LineEventStore): Hono {
       return c.json({ error: 'invalid_signature' }, 401);
     }
 
-    const contentType = c.req.header('content-type')?.split(';', 1)[0].trim();
+    const contentType = c.req
+      .header('content-type')
+      ?.split(';', 1)[0]
+      .trim()
+      .toLowerCase();
     if (contentType !== 'application/json') {
       return c.json({ error: 'unsupported_media_type' }, 415);
     }

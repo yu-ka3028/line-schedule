@@ -34,8 +34,11 @@ export function encryptWebhookPayload(
 }
 
 export function decryptWebhookPayload(encoded: string, key: Buffer): string {
-  const [version, ivEncoded, tagEncoded, ciphertextEncoded] =
-    encoded.split('.');
+  const parts = encoded.split('.');
+  if (parts.length !== 4) {
+    throw new Error('Invalid encrypted payload format');
+  }
+  const [version, ivEncoded, tagEncoded, ciphertextEncoded] = parts;
   if (version !== VERSION || !ivEncoded || !tagEncoded || !ciphertextEncoded) {
     throw new Error('Invalid encrypted payload format');
   }
