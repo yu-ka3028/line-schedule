@@ -64,7 +64,9 @@ npm run build
 
 Webhook本文は最大1 MiB、1回のWebhookに含められるイベント数は最大100件です。複数イベントの保存は現時点ではイベント単位の逐次処理であり、途中失敗時に一部だけ保存される非原子的な動作です。将来、必要に応じて複数イベント保存をRPCなどで原子化してください。
 
-同期text ReplyのdeadlineはWebhook受付開始時刻から800msで、永続化時間の後にさらに800ms待つことはありません。deadline超過時やReply不能時もWebhookはHTTP 200を返します。重複イベントは永続化の `inserted: false` とプロセス内のTTL（10分）・上限（1000件）の抑止でReplyしません。抑止MapにはイベントIDのみを一時的に保持し、本文・replyToken・外部応答本文は保存しません。
+同期text ReplyのdeadlineはWebhook受付開始時刻から800msで、永続化時間の後にさらに800ms待つことはありません。deadline超過時やReply不能時もWebhookはHTTP 200を返します。usage_logsへの記録は残りdeadlineまたは最大100msのbest-effortで、失敗・timeoutは応答を変更しません。重複イベントは永続化の `inserted: false` とプロセス内のTTL（10分）・上限（1000件）の抑止でReplyしません。`LineEventStore.save()` の結果が `{ inserted: true }` と明確でない場合も安全側にReplyしません。抑止MapにはイベントIDのみを一時的に保持し、本文・replyToken・外部応答本文は保存しません。
+
+`LineEventStore.save()` 全体のtimeoutは未実装です。保存前に200を返してデータ欠落を招かないため、現状は保存処理が完了または失敗するまで待ち、失敗時は500を返します。安全なtimeoutと部分保存・retry semanticsの設計は残課題です。
 
 ## 次の実装順
 

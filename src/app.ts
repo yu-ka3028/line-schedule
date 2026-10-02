@@ -230,7 +230,7 @@ export function createApp(
       candidate.source.type === 'user'
         ? (candidate as import('./line-events.js').LineTextMessageEvent)
         : undefined;
-    if (textEvent && saveResult?.inserted !== false) {
+    if (textEvent && saveResult?.inserted === true) {
       const now = Date.now();
       for (const [eventId, seenAt] of seenTextEvents) {
         if (now - seenAt >= seenTextEventTtlMs) seenTextEvents.delete(eventId);

@@ -15,6 +15,7 @@ export type SyncTextDependencies = {
 };
 
 const defaultNow = (): number => performance.now();
+const usageLogTimeoutMs = 100;
 
 export async function processSyncText(
   event: LineTextMessageEvent | undefined,
@@ -44,10 +45,24 @@ export async function processSyncText(
     persistence_ms: Math.max(0, Math.round(dependencies.persistenceMs ?? 0)),
     reply_ms: Math.max(0, Math.round(now() - replyStarted)),
   };
-  try {
-    await dependencies.usageLogs?.record(metadata);
-  } catch {
-    // Usage telemetry must never change the webhook response.
+  const usageLog = dependencies.usageLogs;
+  const remainingMs = Math.max(0, deadline - Date.now());
+  if (usageLog && remainingMs > 0) {
+    const timeoutMs = Math.min(usageLogTimeoutMs, remainingMs);
+    try {
+      await Promise.race([
+        usageLog.record(metadata),
+        new Promise<never>((_, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error('usage log timeout')),
+            timeoutMs,
+          );
+          timer.unref?.();
+        }),
+      ]);
+    } catch {
+      // Usage telemetry must never change the webhook response.
+    }
   }
   return outcome;
 }

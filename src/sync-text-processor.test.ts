@@ -37,6 +37,24 @@ describe('processSyncText', () => {
     });
   });
 
+  it('does not wait indefinitely for usage logging', async () => {
+    vi.useFakeTimers();
+    try {
+      const record = vi.fn(() => new Promise<void>(() => {}));
+      const promise = processSyncText(event, {
+        replyClient: { reply: vi.fn().mockResolvedValue('replied') },
+        usageLogs: { record },
+        deadlineAt: Date.now() + 50,
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      await expect(promise).resolves.toBe('replied');
+      expect(record).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('passes an absolute deadline without extending it for persistence', async () => {
     const reply = vi.fn().mockResolvedValue('timeout');
     const deadlineAt = Date.now() - 1;

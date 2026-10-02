@@ -8,7 +8,7 @@ import { createSupabaseAdminClient } from './supabase-admin.js';
 export type LineEventSaveResult = { inserted: boolean };
 
 export interface LineEventStore {
-  save(payload: LineWebhookPayload): Promise<LineEventSaveResult | void>;
+  save(payload: LineWebhookPayload): Promise<LineEventSaveResult>;
 }
 
 function messageType(event: LineEvent): string {
@@ -36,7 +36,7 @@ export class SupabaseLineEventStore implements LineEventStore {
     private readonly encryptionKey: Buffer,
   ) {}
 
-  async save(payload: LineWebhookPayload): Promise<LineEventSaveResult | void> {
+  async save(payload: LineWebhookPayload): Promise<LineEventSaveResult> {
     let inserted = false;
     // Each event is encrypted independently. This intentionally does not persist
     // the raw webhook body, which may contain unrelated users or group/room data.
