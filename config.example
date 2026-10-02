@@ -1,0 +1,19 @@
+# Variable names only. Set these in the deployment environment; do not commit values.
+
+# LINE Messaging API
+LINE_CHANNEL_SECRET
+LINE_CHANNEL_ACCESS_TOKEN
+
+# Supabase
+SUPABASE_URL
+SUPABASE_ANON_KEY
+
+# Upstash QStash
+QSTASH_TOKEN
+QSTASH_CURRENT_SIGNING_KEY
+QSTASH_NEXT_SIGNING_KEY
+
+# Google OAuth / Calendar
+GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET
+GOOGLE_REDIRECT_URI
