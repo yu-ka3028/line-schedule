@@ -46,18 +46,23 @@ npm run build
 
 - `src/app.ts`: Hono アプリ本体
 - `api/[[...route]].ts`: Vercel Functions のエントリポイント
-- `POST /webhooks/line`: `LINE_CHANNEL_SECRET` と raw body による LINE 署名検証後、Webhookイベントの最小入力検証を実施し、妥当な入力はイベント処理未実装として 501
-- Supabase / QStash / Google / LINE SDK: 将来の実装に備えた依存関係のみ
+- `POST /webhooks/line`: 署名・入力検証後、ユーザー由来イベントをSupabaseへ冪等保存する
+- Supabase service role、本文暗号化、イベント保存を実装済み。QStash / Google / LINE SDKは将来利用する
 
 ## 未実装範囲
 
-- LINE Webhook のイベント処理、永続化、返信（署名検証と最小入力検証は実装済み）
-- Supabase の永続化処理（初期スキーマと backend service role 専用の RLS 境界は追加済み）
+- LINE Webhook の業務イベント処理、返信（受信イベントの冪等保存は実装済み）
+- Supabase実環境への接続確認（単体テストは外部接続なし）
+- グループ・ルームイベントの個人登録（MVPでは保存対象外）
 - QStash の署名検証とジョブ処理
 - Google OAuth、トークン保管、Google Calendar 連携
-- エラー監視、レート制限、運用設定
+- エラー監視、レート制限、リプレイ対策、運用設定
 
-署名検証なしにWebhook本文を処理する実装は追加しないでください。現在は検証成功後にイベントの最小入力検証のみを行い、妥当な入力は501、入力不正は400で停止します。`LINE_CHANNEL_SECRET` 未設定は503、署名不正・欠落は401で応答します。本文は署名検証前にJSONとして解釈しません。message text/image、postback、followを識別し、未知イベントは副作用なしにunknownとして扱います。
+レート制限とリプレイ対策は未実装です。本番ではVercelの設定やWAFなどのインフラ側で、レート制限と必要なリプレイ対策を必ず設定してください。
+
+署名検証なしにWebhook本文を処理する実装は追加しないでください。現在は検証成功後に入力検証と冪等保存を行い、成功時は200、入力不正は400、永続化失敗は詳細を含めず500で応答します。LINE_CHANNEL_SECRET、Supabase接続情報、暗号化鍵の未設定は503、署名不正・欠落は401で応答します。ユーザーsourceイベントのみ、イベント単体のJSONを `WEBHOOK_PAYLOAD_ENCRYPTION_KEY`（base64の32バイト鍵）によるAES-256-GCM暗号文として保存します。Webhook全体は保存せず、group/roomや別userイベントを同じ暗号文に含めません。`SUPABASE_SERVICE_ROLE_KEY` はサーバー側だけで使い、anon keyで書き込みません。本文は署名検証前にJSONとして解釈しません。実Supabase接続はまだ確認していません。
+
+Webhook本文は最大1 MiB、1回のWebhookに含められるイベント数は最大100件です。複数イベントの保存は現時点ではイベント単位の逐次処理であり、途中失敗時に一部だけ保存される非原子的な動作です。将来、必要に応じて複数イベント保存をRPCなどで原子化してください。
 
 ## 次の実装順
 
