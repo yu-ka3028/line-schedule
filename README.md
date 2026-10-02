@@ -47,14 +47,14 @@ npm run build
 - `src/app.ts`: Hono アプリ本体
 - `api/[[...route]].ts`: Vercel Functions のエントリポイント
 - `POST /webhooks/line`: 署名・入力検証後、ユーザー由来イベントをSupabaseへ冪等保存する
-- Supabase service role、本文暗号化、イベント保存を実装済み。QStash / Google / LINE SDKは将来利用する
+- Supabase service role、本文暗号化、イベント保存を実装済み。QStashは署名検証・ジョブ状態管理の安全な骨格を実装済み
 
 ## 未実装範囲
 
 - LINE Webhook の業務イベント処理、返信（受信イベントの冪等保存は実装済み）
 - Supabase実環境への接続確認（単体テストは外部接続なし）
 - グループ・ルームイベントの個人登録（MVPでは保存対象外）
-- QStash の署名検証とジョブ処理
+- QStashのpublish、Calendar実処理、実環境でのジョブ実行確認
 - Google OAuth、トークン保管、Google Calendar 連携
 - エラー監視、レート制限、リプレイ対策、運用設定
 
