@@ -49,11 +49,12 @@ export async function processSyncText(
   const remainingMs = Math.max(0, deadline - Date.now());
   if (usageLog && remainingMs > 0) {
     const timeoutMs = Math.min(usageLogTimeoutMs, remainingMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
         usageLog.record(metadata),
         new Promise<never>((_, reject) => {
-          const timer = setTimeout(
+          timer = setTimeout(
             () => reject(new Error('usage log timeout')),
             timeoutMs,
           );
@@ -62,6 +63,8 @@ export async function processSyncText(
       ]);
     } catch {
       // Usage telemetry must never change the webhook response.
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
   return outcome;

@@ -37,6 +37,36 @@ describe('processSyncText', () => {
     });
   });
 
+  it('clears the usage timeout after successful logging', async () => {
+    vi.useFakeTimers();
+    try {
+      await processSyncText(event, {
+        replyClient: { reply: vi.fn().mockResolvedValue('replied') },
+        usageLogs: { record: vi.fn().mockResolvedValue(undefined) },
+      });
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears the usage timeout after logging fails', async () => {
+    vi.useFakeTimers();
+    try {
+      await processSyncText(event, {
+        replyClient: { reply: vi.fn().mockResolvedValue('replied') },
+        usageLogs: {
+          record: vi.fn().mockRejectedValue(new Error('telemetry')),
+        },
+      });
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not wait indefinitely for usage logging', async () => {
     vi.useFakeTimers();
     try {
@@ -50,6 +80,7 @@ describe('processSyncText', () => {
       await vi.advanceTimersByTimeAsync(50);
       await expect(promise).resolves.toBe('replied');
       expect(record).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }
