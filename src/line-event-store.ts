@@ -30,6 +30,29 @@ function persistenceEvent(event: LineEvent): LineEvent {
   return event;
 }
 
+function isLineEventDuplicate(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const result = error as {
+    code?: unknown;
+    constraint?: unknown;
+    message?: unknown;
+    details?: unknown;
+  };
+  if (result.code !== '23505') return false;
+
+  const constraint =
+    typeof result.constraint === 'string' ? result.constraint : '';
+  if (constraint.toLowerCase().includes('line_event_id')) return true;
+
+  // Some PostgREST responses omit constraint but include the column in the
+  // diagnostic text. Do not treat an unrelated unique violation as a duplicate.
+  return [result.message, result.details].some(
+    (value) =>
+      typeof value === 'string' &&
+      value.toLowerCase().includes('line_event_id'),
+  );
+}
+
 export class SupabaseLineEventStore implements LineEventStore {
   constructor(
     private readonly client: SupabaseClient,
@@ -53,10 +76,10 @@ export class SupabaseLineEventStore implements LineEventStore {
         .single();
       if (userResult.error) throw userResult.error;
 
-      const eventResult = await this.client
-        .from('inbound_events')
-        .upsert(
-          {
+      try {
+        const eventResult = await this.client
+          .from('inbound_events')
+          .insert({
             user_id: userResult.data.id,
             line_event_id: event.webhookEventId,
             message_type: messageType(event),
@@ -64,17 +87,14 @@ export class SupabaseLineEventStore implements LineEventStore {
               JSON.stringify(persistenceEvent(event)),
               this.encryptionKey,
             ),
-          },
-          { onConflict: 'line_event_id', ignoreDuplicates: true },
-        )
-        .select('id')
-        .maybeSingle();
-      // With ignoreDuplicates, PostgREST returns the inserted row for a new
-      // event and null when the line_event_id already exists.
-      if (eventResult.error) throw eventResult.error;
-      if (eventResult.data !== null) inserted = true;
-      // ignoreDuplicates applies specifically to the line_event_id conflict
-      // target; all other persistence errors remain failures.
+          })
+          .select('id')
+          .single();
+        if (eventResult.error) throw eventResult.error;
+        inserted = true;
+      } catch (error) {
+        if (!isLineEventDuplicate(error)) throw error;
+      }
     }
     return { inserted };
   }
