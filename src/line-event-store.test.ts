@@ -15,11 +15,17 @@ function createClientMock() {
     })),
   }));
   const eventUpsert = vi
-    .fn<(...args: unknown[]) => { select: () => Promise<unknown> }>()
+    .fn<
+      (...args: unknown[]) => {
+        select: () => { maybeSingle: () => Promise<unknown> };
+      }
+    >()
     .mockImplementation(() => ({
-      select: vi
-        .fn()
-        .mockResolvedValue({ data: [{ id: 'event-row-1' }], error: null }),
+      select: vi.fn(() => ({
+        maybeSingle: vi
+          .fn()
+          .mockResolvedValue({ data: { id: 'event-row-1' }, error: null }),
+      })),
     }));
   const client = {
     from: vi.fn((table: string) => {
@@ -99,10 +105,12 @@ describe('SupabaseLineEventStore', () => {
     expect(row.payload_ciphertext).not.toContain('R123');
   });
 
-  it('reports inserted false when insert data is empty', async () => {
+  it('reports inserted false when PostgREST returns null for a duplicate', async () => {
     const { client, eventUpsert } = createClientMock();
     eventUpsert.mockReturnValue({
-      select: vi.fn().mockResolvedValue({ data: [], error: null }),
+      select: vi.fn(() => ({
+        maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+      })),
     });
     const store = new SupabaseLineEventStore(client, randomBytes(32));
 
@@ -120,11 +128,42 @@ describe('SupabaseLineEventStore', () => {
     ).resolves.toEqual({ inserted: false });
   });
 
+  it('reports inserted true when any event in a batch is new', async () => {
+    const { client, eventUpsert } = createClientMock();
+    eventUpsert.mockImplementationOnce(() => ({
+      select: vi.fn(() => ({
+        maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+      })),
+    }));
+    const store = new SupabaseLineEventStore(client, randomBytes(32));
+
+    await expect(
+      store.save({
+        events: [
+          {
+            type: 'follow',
+            webhookEventId: 'event-duplicate',
+            timestamp: 1710000000000,
+            source: { type: 'user', userId: 'U123' },
+          },
+          {
+            type: 'follow',
+            webhookEventId: 'event-new',
+            timestamp: 1710000000001,
+            source: { type: 'user', userId: 'U123' },
+          },
+        ],
+      }),
+    ).resolves.toEqual({ inserted: true });
+  });
+
   it('propagates non-duplicate insert errors', async () => {
     const { client, eventUpsert } = createClientMock();
     const error = { code: '42501', message: 'permission denied' };
     eventUpsert.mockReturnValue({
-      select: vi.fn().mockResolvedValue({ data: null, error }),
+      select: vi.fn(() => ({
+        maybeSingle: vi.fn().mockResolvedValue({ data: null, error }),
+      })),
     });
     const store = new SupabaseLineEventStore(client, randomBytes(32));
 
