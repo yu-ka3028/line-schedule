@@ -67,11 +67,14 @@ export class SupabaseLineEventStore implements LineEventStore {
           },
           { onConflict: 'line_event_id', ignoreDuplicates: true },
         )
-        .select('id');
-      if (!eventResult.error && eventResult.data?.length) inserted = true;
+        .select('id')
+        .maybeSingle();
+      // With ignoreDuplicates, PostgREST returns the inserted row for a new
+      // event and null when the line_event_id already exists.
+      if (eventResult.error) throw eventResult.error;
+      if (eventResult.data !== null) inserted = true;
       // ignoreDuplicates applies specifically to the line_event_id conflict
       // target; all other persistence errors remain failures.
-      if (eventResult.error) throw eventResult.error;
     }
     return { inserted };
   }
