@@ -138,6 +138,10 @@ export function createApp(
   });
 
   app.post('/webhooks/qstash/jobs', async (c) => {
+    // Deliberately stop before config/client construction, signature verification,
+    // claims, or executors. QStash may receive a 200 while the feature is off;
+    // this is an explicit no-side-effect hard-stop, not an authentication result.
+    if (!isLineAsyncProcessingEnabled()) return c.json({ ok: true }, 200);
     let config: QstashConfig;
     try {
       config = dependencies.qstash?.config ?? readQstashConfig();
@@ -230,11 +234,18 @@ export function createApp(
         : c.json({ error: 'job_store_unavailable' }, 500);
     } catch {
       try {
-        const result = await store.failOrRequeue(
-          job.jobId,
-          claim.token,
-          'handler_unavailable',
-        );
+        const result =
+          jobType === 'line_event_process' && store.failOrRequeueLineEvent
+            ? await store.failOrRequeueLineEvent(
+                job.jobId,
+                claim.token,
+                'handler_unavailable',
+              )
+            : await store.failOrRequeue(
+                job.jobId,
+                claim.token,
+                'handler_unavailable',
+              );
         return result === 'failed'
           ? c.json({ ok: true }, 200)
           : c.json({ error: 'job_retryable_failure' }, 500);

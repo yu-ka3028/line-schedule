@@ -36,6 +36,22 @@ describe('processing job store', () => {
     ).rejects.toThrow('invalid processing token');
   });
 
+  it('uses the line retry RPC for atomic outbox recovery', async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: [{ outcome: 'requeued' }],
+      error: null,
+    });
+    const store = createSupabaseProcessingJobStore({ rpc });
+    await expect(
+      store.failOrRequeueLineEvent?.(id, token, 'handler_unavailable'),
+    ).resolves.toBe('requeued');
+    expect(rpc).toHaveBeenCalledWith('fail_or_requeue_line_event_job', {
+      p_job_id: id,
+      p_processing_token: token,
+      p_error: 'handler_unavailable',
+    });
+  });
+
   it('rejects unsafe error codes', async () => {
     const rpc = vi.fn();
     const store = createSupabaseProcessingJobStore({ rpc });
