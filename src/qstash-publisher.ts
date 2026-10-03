@@ -1,6 +1,10 @@
 import { Client } from '@upstash/qstash';
 
-import { ConfigurationError, type QstashConfig } from './config.js';
+import {
+  ConfigurationError,
+  validateReceiverUrl,
+  type QstashConfig,
+} from './config.js';
 
 export type QstashPublisher = {
   publish(jobId: string): Promise<{ messageId: string }>;
@@ -21,15 +25,20 @@ export function createQstashPublisher(
   }),
   timeoutMs = 500,
 ): QstashPublisher {
+  const receiverUrl = validateReceiverUrl(
+    config.receiverUrl,
+    'QSTASH_JOB_RECEIVER_URL',
+  );
   return {
     async publish(jobId) {
       if (!UUID.test(jobId)) throw new Error('invalid job id');
       const result = await Promise.race([
         client.publishJSON({
-          url: config.receiverUrl,
+          url: receiverUrl,
           body: { jobId },
           retries: 0,
           label: 'line-event-process',
+          deduplicationId: `line-event-process:${jobId}`,
         }),
         new Promise<never>((_, reject) =>
           setTimeout(
@@ -59,5 +68,8 @@ export function readQstashPublisherConfig(): {
   const receiverUrl = process.env.QSTASH_JOB_RECEIVER_URL;
   if (!receiverUrl)
     throw new ConfigurationError('QSTASH_JOB_RECEIVER_URL is not configured');
-  return { token, receiverUrl };
+  return {
+    token,
+    receiverUrl: validateReceiverUrl(receiverUrl, 'QSTASH_JOB_RECEIVER_URL'),
+  };
 }

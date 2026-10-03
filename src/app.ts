@@ -25,6 +25,7 @@ import {
 } from './line-event-store.js';
 import {
   dispatchLineEventPublish,
+  dispatchLineEventPublishBatch,
   createSupabaseLineOutboxStore,
   type LineOutboxStore,
 } from './line-outbox.js';
@@ -57,6 +58,8 @@ export type AppDependencies = {
     verifier?: QstashSignatureVerifier;
     jobs?: ProcessingJobStore;
     executor?: JobExecutor;
+    outbox?: LineOutboxStore;
+    publisher?: QstashPublisher;
   };
 };
 
@@ -65,6 +68,74 @@ export function createApp(
   dependencies: AppDependencies = {},
 ): Hono {
   const app = new Hono();
+
+  app.post('/webhooks/qstash/outbox-dispatch', async (c) => {
+    // A disabled flag is a hard safety boundary: do not construct clients or
+    // make any QStash/DB calls while disabled.
+    if (!isLineAsyncProcessingEnabled()) return c.json({ ok: true }, 200);
+    let config: QstashConfig;
+    try {
+      config = dependencies.qstash?.config ?? readQstashConfig();
+    } catch (error) {
+      if (error instanceof ConfigurationError)
+        return c.json({ error: 'configuration_unavailable' }, 503);
+      throw error;
+    }
+    const signature = c.req.header('upstash-signature');
+    if (!signature) return c.json({ error: 'invalid_signature' }, 401);
+    const contentType = c.req
+      .header('content-type')
+      ?.split(';', 1)[0]
+      .trim()
+      .toLowerCase();
+    if (contentType !== 'application/json')
+      return c.json({ error: 'unsupported_media_type' }, 415);
+    const rawBody = await readBodyWithLimit(c.req.raw, MAX_QSTASH_BODY_BYTES);
+    if (rawBody === null)
+      return c.json({ error: 'request_entity_too_large' }, 413);
+    let body: string;
+    try {
+      body = new TextDecoder('utf-8', { fatal: true }).decode(rawBody);
+    } catch {
+      return c.json({ error: 'invalid_encoding' }, 400);
+    }
+    const verifier =
+      dependencies.qstash?.verifier ??
+      createQstashSignatureVerifier(
+        config,
+        config.dispatcherUrl ?? '/webhooks/qstash/outbox-dispatch',
+      );
+    try {
+      if (!(await verifier.verify(body, signature)))
+        return c.json({ error: 'invalid_signature' }, 401);
+    } catch {
+      return c.json({ error: 'invalid_signature' }, 401);
+    }
+    try {
+      const value = JSON.parse(body) as unknown;
+      if (
+        typeof value !== 'object' ||
+        value === null ||
+        Array.isArray(value) ||
+        Object.keys(value).length !== 1 ||
+        (value as { kind?: unknown }).kind !== 'outbox_dispatch'
+      )
+        return c.json({ error: 'invalid_payload' }, 400);
+    } catch {
+      return c.json({ error: 'invalid_payload' }, 400);
+    }
+    try {
+      const outbox =
+        dependencies.qstash?.outbox ?? createSupabaseLineOutboxStore();
+      const publisher =
+        dependencies.qstash?.publisher ??
+        createQstashPublisher(readQstashPublisherConfig());
+      await dispatchLineEventPublishBatch(outbox, publisher, 10);
+      return c.json({ ok: true }, 200);
+    } catch {
+      return c.json({ error: 'dispatcher_unavailable' }, 500);
+    }
+  });
 
   app.post('/webhooks/qstash/jobs', async (c) => {
     let config: QstashConfig;
@@ -94,7 +165,8 @@ export function createApp(
       return c.json({ error: 'invalid_encoding' }, 400);
     }
     const verifier =
-      dependencies.qstash?.verifier ?? createQstashSignatureVerifier(config);
+      dependencies.qstash?.verifier ??
+      createQstashSignatureVerifier(config, config.receiverUrl);
     try {
       if (!(await verifier.verify(body, signature)))
         return c.json({ error: 'invalid_signature' }, 401);
@@ -131,14 +203,26 @@ export function createApp(
       return c.json({ ok: true }, 200);
     if (claim.outcome === 'busy' || claim.outcome === 'not_due' || !claim.token)
       return c.json({ error: 'job_not_ready' }, 500);
-    // Calendar execution is intentionally unavailable until the handler is implemented.
-    // Failing safely keeps the job retryable instead of falsely marking it succeeded.
+    // The payload remains jobId-only; the trusted DB claim supplies job_type.
+    // Unknown/unimplemented types must stay retryable and never be successful.
+    const jobType = claim.jobType ?? 'line_event_process';
     const executor =
       dependencies.qstash?.executor ??
       (async () => {
-        throw new Error('handler_unavailable');
+        throw new Error(
+          jobType === 'line_event_process'
+            ? 'handler_unavailable'
+            : 'unknown_job_type',
+        );
       });
     try {
+      if (
+        jobType !== 'line_event_process' &&
+        !['calendar_create', 'calendar_update', 'calendar_delete'].includes(
+          jobType,
+        )
+      )
+        throw new Error('unknown_job_type');
       await executor(job, claim.token);
       const result = await store.succeed(job.jobId, claim.token);
       return result === 'succeeded'

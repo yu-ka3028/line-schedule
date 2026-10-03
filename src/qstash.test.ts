@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
 import type { ProcessingJobStore } from './processing-job-store.js';
@@ -30,6 +30,10 @@ function store(
   };
 }
 
+afterEach(() => {
+  delete process.env.LINE_ASYNC_PROCESSING_ENABLED;
+});
+
 const request = (body = JSON.stringify({ jobId: id })) => ({
   method: 'POST',
   headers: { 'content-type': 'application/json', 'upstash-signature': 'sig' },
@@ -37,6 +41,76 @@ const request = (body = JSON.stringify({ jobId: id })) => ({
 });
 
 describe('QStash jobs webhook', () => {
+  it('does not access outbox or verify when dispatcher flag is off', async () => {
+    const outbox = {
+      claimBatch: vi.fn(),
+      claim: vi.fn(),
+      finish: vi.fn(),
+    };
+    const publisher = { publish: vi.fn() };
+    const verify = vi.fn();
+    const response = await createApp(undefined, {
+      qstash: { config, verifier: { verify }, outbox, publisher },
+    }).request('/webhooks/qstash/outbox-dispatch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'outbox_dispatch' }),
+    });
+    expect(response.status).toBe(200);
+    expect(verify).not.toHaveBeenCalled();
+    expect(outbox.claimBatch).not.toHaveBeenCalled();
+    expect(publisher.publish).not.toHaveBeenCalled();
+  });
+
+  it('verifies strict dispatcher payload and recovers a claimed lease', async () => {
+    process.env.LINE_ASYNC_PROCESSING_ENABLED = 'true';
+    const outbox = {
+      claimBatch: vi.fn().mockResolvedValue([{ jobId: id, token: 'lease' }]),
+      finish: vi.fn().mockResolvedValue('published'),
+      claim: vi.fn(),
+    };
+    const publisher = {
+      publish: vi.fn().mockResolvedValue({ messageId: 'm1' }),
+    };
+    const verify = vi.fn().mockResolvedValue(true);
+    const response = await createApp(undefined, {
+      qstash: { config, verifier: { verify }, outbox, publisher },
+    }).request('/webhooks/qstash/outbox-dispatch', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'upstash-signature': 'sig',
+      },
+      body: JSON.stringify({ kind: 'outbox_dispatch' }),
+    });
+    expect(response.status).toBe(200);
+    expect(verify).toHaveBeenCalledOnce();
+    expect(publisher.publish).toHaveBeenCalledWith(id);
+    expect(outbox.finish).toHaveBeenCalledWith(id, 'lease', {
+      messageId: 'm1',
+    });
+  });
+
+  it('rejects extra dispatcher payload fields after signature verification', async () => {
+    process.env.LINE_ASYNC_PROCESSING_ENABLED = 'true';
+    const outbox = { claimBatch: vi.fn(), finish: vi.fn(), claim: vi.fn() };
+    const response = await createApp(undefined, {
+      qstash: {
+        config,
+        verifier: { verify: vi.fn().mockResolvedValue(true) },
+        outbox,
+      },
+    }).request('/webhooks/qstash/outbox-dispatch', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'upstash-signature': 'sig',
+      },
+      body: JSON.stringify({ kind: 'outbox_dispatch', extra: true }),
+    });
+    expect(response.status).toBe(400);
+    expect(outbox.claimBatch).not.toHaveBeenCalled();
+  });
   it('verifies before parsing or accessing the store', async () => {
     const jobs = store();
     const verify = vi.fn().mockResolvedValue(false);

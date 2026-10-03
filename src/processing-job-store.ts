@@ -29,6 +29,7 @@ export type ClaimResult = {
     | 'not_due'
     | 'expired';
   token?: string;
+  jobType?: string;
 };
 export type FinishResult =
   'succeeded' | 'requeued' | 'failed' | 'token_mismatch' | 'not_found';
@@ -84,6 +85,7 @@ export function createSupabaseProcessingJobStore(
       const row = one(data);
       const outcome = claimOutcome(row.outcome);
       const token = row.processing_token;
+      const jobType = row.job_type;
       if (outcome === 'claimed') {
         if (typeof token !== 'string')
           throw new Error('claimed job has no processing token');
@@ -92,6 +94,7 @@ export function createSupabaseProcessingJobStore(
       return {
         outcome,
         token: typeof token === 'string' ? token : undefined,
+        jobType: typeof jobType === 'string' ? jobType : undefined,
       };
     },
     async succeed(jobId, token) {

@@ -20,7 +20,22 @@ describe('QStash publisher', () => {
       body: { jobId },
       retries: 0,
       label: 'line-event-process',
+      deduplicationId: `line-event-process:${jobId}`,
     });
+  });
+
+  it.each([
+    'http://example.test/webhooks/qstash/jobs',
+    'https://example.test/webhooks/qstash/jobs?token=leak',
+    'https://user:pass@example.test/webhooks/qstash/jobs',
+    'https://example.test/other',
+  ])('rejects an unsafe receiver URL: %s', (receiverUrl) => {
+    expect(() =>
+      createQstashPublisher(
+        { ...config, receiverUrl },
+        { publishJSON: vi.fn() },
+      ),
+    ).toThrow('valid URL');
   });
 
   it('rejects an unknown response', async () => {

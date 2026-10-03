@@ -90,3 +90,9 @@ supabase db push
 ## QStash jobs
 
 QStash受信側の安全な骨格を実装済みです。詳細、必要な設定、migration適用条件、未実装範囲は[QStashジョブ処理の設計メモ](docs/qstash-jobs.md)を参照してください。
+
+## Outbox dispatcher運用
+
+`POST /webhooks/qstash/outbox-dispatch` はQStash署名付きの固定payload `{ "kind": "outbox_dispatch" }` を受け、最大10件のpending/retry_due/lease切れをclaimしてpublishします。QStash Scheduleを後からこのURLへ1分間隔などで設定すれば、未publishを回収できます。Schedule設定はQStash管理画面/APIで行い、`QSTASH_JOB_RECEIVER_URL`（HTTPS、固定path `/webhooks/qstash/jobs`、credentials/query/hashなし）とは分離します。
+
+migrationは `0001` → `0002` → `0003` → `0004` の順に適用してください。`LINE_ASYNC_PROCESSING_ENABLED` はdefault falseで、flag offではpublisher/dispatcherの外部通信はありません。publishはat-least-onceで、timeout後の重複publishを監視します（exactly-onceではありません）。job payloadにreplyToken/本文は含めません。`line_event_process` の実executorは未実装で、receiverは未実装・未知job_typeをretryable failureとして成功扱いしません。

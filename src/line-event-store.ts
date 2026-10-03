@@ -19,15 +19,11 @@ function messageType(event: LineEvent): string {
 }
 
 function persistenceEvent(event: LineEvent): LineEvent {
-  if (
-    event.type === 'message' &&
-    (event.message as { type?: string }).type === 'text'
-  ) {
-    const safeEvent = { ...event } as LineEvent & { replyToken?: string };
-    delete safeEvent.replyToken;
-    return safeEvent;
-  }
-  return event;
+  // replyToken is sensitive regardless of event type, including future/unknown
+  // LINE event shapes. Strip only the top-level field before encryption.
+  const safeEvent = { ...event } as LineEvent & { replyToken?: unknown };
+  delete safeEvent.replyToken;
+  return safeEvent;
 }
 
 function isLineEventDuplicate(error: unknown): boolean {

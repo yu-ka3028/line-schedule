@@ -156,7 +156,9 @@ function parseEvent(value: unknown): LineEvent {
     return { ...base, type };
   }
 
-  return { ...base, type };
+  // Preserve unknown top-level fields for forward compatibility; persistence
+  // removes replyToken from this shape before encryption as well.
+  return { ...value, ...base, type } as UnknownLineEvent;
 }
 
 export function parseLineWebhookPayload(

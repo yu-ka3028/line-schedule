@@ -25,24 +25,34 @@ export function readWebhookEncryptionKey(): Buffer {
   return key;
 }
 
-function validateUrl(value: string, name: string, path?: string): string {
+function validateFixedHttpsUrl(
+  value: string,
+  name: string,
+  path: string,
+): string {
   try {
     const parsed = new URL(value);
-    const localhost = parsed.hostname === 'localhost';
     if (
-      (parsed.protocol !== 'https:' &&
-        !(localhost && parsed.protocol === 'http:')) ||
+      parsed.protocol !== 'https:' ||
       parsed.username ||
       parsed.password ||
       parsed.search ||
       parsed.hash ||
-      (path !== undefined && parsed.pathname !== path)
+      parsed.pathname !== path
     )
       throw new Error();
     return value;
   } catch {
     throw new ConfigurationError(`${name} must be a valid URL`);
   }
+}
+
+export function validateReceiverUrl(value: string, name: string): string {
+  return validateFixedHttpsUrl(value, name, '/webhooks/qstash/jobs');
+}
+
+export function validateDispatcherUrl(value: string, name: string): string {
+  return validateFixedHttpsUrl(value, name, '/webhooks/qstash/outbox-dispatch');
 }
 
 export function readSupabaseConfig(): { url: string; serviceRoleKey: string } {
@@ -72,6 +82,7 @@ export type QstashConfig = {
   currentSigningKey: string;
   nextSigningKey: string;
   receiverUrl: string;
+  dispatcherUrl?: string;
 };
 
 export function isLineAsyncProcessingEnabled(): boolean {
@@ -82,10 +93,13 @@ export function readQstashConfig(): QstashConfig {
   return {
     currentSigningKey: requiredEnvironment('QSTASH_CURRENT_SIGNING_KEY'),
     nextSigningKey: requiredEnvironment('QSTASH_NEXT_SIGNING_KEY'),
-    receiverUrl: validateUrl(
+    receiverUrl: validateReceiverUrl(
       requiredEnvironment('QSTASH_JOB_RECEIVER_URL'),
       'QSTASH_JOB_RECEIVER_URL',
-      '/webhooks/qstash/jobs',
+    ),
+    dispatcherUrl: validateDispatcherUrl(
+      requiredEnvironment('QSTASH_OUTBOX_DISPATCHER_URL'),
+      'QSTASH_OUTBOX_DISPATCHER_URL',
     ),
   };
 }

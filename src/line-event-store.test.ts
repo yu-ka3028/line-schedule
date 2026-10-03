@@ -89,6 +89,27 @@ describe('SupabaseLineEventStore', () => {
     expect(persisted).not.toHaveProperty('replyToken');
   });
 
+  it('removes top-level replyToken from unknown event types before encryption', async () => {
+    const { client, eventInsert } = createClientMock();
+    const key = randomBytes(32);
+    const event = {
+      type: 'future_event',
+      webhookEventId: 'future-1',
+      timestamp: 1710000000000,
+      source: { type: 'user' as const, userId: 'U123' },
+      replyToken: 'sensitive-token',
+      futureField: 'kept',
+    } as never;
+    const safeStore = new SupabaseLineEventStore(client, key);
+    await safeStore.save({ events: [event] });
+    const [row] = eventInsert.mock.calls[0] as [Record<string, unknown>];
+    const persisted = JSON.parse(
+      decryptWebhookPayload(row.payload_ciphertext as string, key),
+    );
+    expect(persisted).not.toHaveProperty('replyToken');
+    expect(persisted.futureField).toBe('kept');
+  });
+
   it('reports false only for a line_event_id unique violation', async () => {
     const { client, eventInsert } = createClientMock();
     eventInsert.mockReturnValue({
