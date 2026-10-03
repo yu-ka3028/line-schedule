@@ -86,7 +86,7 @@ supabase db push
 
 このマイグレーションはまだ実行していません。全テーブルでRLSを有効にし、MVPではクライアント向けpolicyを作成していないため、アクセスはbackendのservice role接続に限定されます。service role keyをクライアントへ渡さないでください。
 
-`inbound_events.payload_ciphertext` は、LINEイベントの本文・画像・イベント内容をアプリケーション側で暗号化した暗号文の保存先です。暗号化、鍵管理、復号はアプリケーション実装が必要であり、このSQL自体は暗号化を行いません。`usage_logs.metadata` に秘密情報や本文・イベント内容を保存しないでください。同期計測metadataはschema_version、固定outcome、total_ms、persistence_ms、reply_msだけです。replyTokenはDB・暗号化payload・usage/logへ保存せず、実行時だけ保持します。LINE_CHANNEL_ACCESS_TOKEN未設定時はReplyを実行せず、保存後に200を返します。保存成功後のReply失敗・timeoutも200です。
+`inbound_events.payload_ciphertext` は、LINEイベントの本文・画像・イベント内容をアプリケーション側で暗号化した暗号文の保存先です。暗号化、鍵管理、復号はアプリケーション実装が必要であり、このSQL自体は暗号化を行いません。`usage_logs.metadata` に秘密情報や本文・イベント内容を保存しないでください。同期計測metadataはschema_version、固定outcome、total_ms、persistence_ms、reply_msだけです。replyTokenはDB・暗号化payload・usage/logへ保存せず、実行時だけ保持します。LINE_CHANNEL_ACCESS_TOKEN未設定時はReplyを実行せず、保存後に200を返します。保存成功後のReply失敗・timeoutも200です。`inbound_events` は `insert(...).select('id').single()` の戻り値で新規挿入を判定し、`line_event_id` のunique違反（Postgres code `23505`）だけをduplicateとして扱います。それ以外の保存エラーは処理を中断します。
 
 ## QStash jobs
 
