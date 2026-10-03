@@ -16,6 +16,22 @@ export type SyncTextDependencies = {
 
 const defaultNow = (): number => performance.now();
 const usageLogTimeoutMs = 100;
+export const syncDiagnosticEvent = 'sync_text_diagnostic';
+
+type SyncDiagnosticTiming = Pick<
+  SyncUsageMetadata,
+  'outcome' | 'total_ms' | 'persistence_ms' | 'reply_ms'
+>;
+
+function logSyncDiagnostic(payload: SyncDiagnosticTiming): void {
+  console.info(syncDiagnosticEvent, payload);
+}
+
+export function logSyncSkip(
+  reason: 'not_single_user_text' | 'not_inserted' | 'duplicate',
+): void {
+  console.info(syncDiagnosticEvent, { reason });
+}
 
 export async function processSyncText(
   event: LineTextMessageEvent | undefined,
@@ -23,7 +39,10 @@ export async function processSyncText(
 ): Promise<SyncTextOutcome> {
   const now = dependencies.now ?? defaultNow;
   const started = now();
-  if (!event || event.source.type !== 'user') return 'skipped';
+  if (!event || event.source.type !== 'user') {
+    logSyncSkip('not_single_user_text');
+    return 'skipped';
+  }
 
   const deadline =
     dependencies.deadlineAt ?? Date.now() + (dependencies.deadlineMs ?? 800);
@@ -67,5 +86,11 @@ export async function processSyncText(
       if (timer !== undefined) clearTimeout(timer);
     }
   }
+  logSyncDiagnostic({
+    outcome: metadata.outcome,
+    total_ms: metadata.total_ms,
+    persistence_ms: metadata.persistence_ms,
+    reply_ms: metadata.reply_ms,
+  });
   return outcome;
 }

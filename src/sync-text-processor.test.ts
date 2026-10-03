@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { processSyncText } from './sync-text-processor.js';
 
@@ -12,7 +12,12 @@ const event = {
 };
 
 describe('processSyncText', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('replies with a fake client and records allowlisted timing metadata', async () => {
+    const diagnostic = vi.spyOn(console, 'info').mockImplementation(() => {});
     const reply = vi.fn().mockResolvedValue('replied');
     const record = vi.fn().mockResolvedValue(undefined);
     const outcome = await processSyncText(event, {
@@ -35,6 +40,17 @@ describe('processSyncText', () => {
       persistence_ms: 7,
       reply_ms: 10,
     });
+    expect(diagnostic).toHaveBeenCalledWith('sync_text_diagnostic', {
+      outcome: 'replied',
+      total_ms: 10,
+      persistence_ms: 7,
+      reply_ms: 10,
+    });
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('private');
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain(
+      'short-lived-token',
+    );
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('event-1');
   });
 
   it('clears the usage timeout after successful logging', async () => {
@@ -110,6 +126,7 @@ describe('processSyncText', () => {
   );
 
   it('skips non-user events', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {});
     const reply = vi.fn();
     const outcome = await processSyncText(
       {
@@ -120,5 +137,8 @@ describe('processSyncText', () => {
     );
     expect(outcome).toBe('skipped');
     expect(reply).not.toHaveBeenCalled();
+    expect(console.info).toHaveBeenCalledWith('sync_text_diagnostic', {
+      reason: 'not_single_user_text',
+    });
   });
 });
