@@ -66,7 +66,15 @@ Webhook本文は最大1 MiB、1回のWebhookに含められるイベント数は
 
 同期Replyは廃止しました。LINE access tokenは設定として残せますが返信には使用しません。`LINE_ASYNC_PROCESSING_ENABLED`がfalseの場合はイベント保存までで200、trueの場合は短いQStash publishを試行します。publish失敗はDBの`retry_due` outboxとして回収可能です。保証はexactly-onceではなく、at-least-once publishと冪等jobです。replyTokenは保存・ログ・QStash payloadに含めません。Push方式の返信が必要な場合は、executorと認可・再送設計を別途実装してください。
 
-migration `0003_line_event_outbox.sql` は未適用です。適用後、Supabase service roleでRPCを利用し、`QSTASH_TOKEN`とreceiver URLを登録してください。rollbackはflagをfalseに戻してpublishを停止し、必要に応じてoutboxを監視してからmigrationを計画的に戻します。QStash/DB/LLMの費用は各サービスの従量料金に依存し、Phase 1では保存・publish回数×各サービス単価が概算です。
+migration `0003_line_event_outbox.sql`〜`0005_qstash_executor_safety.sql` は未適用です。適用後、Supabase service roleでRPCを利用し、`QSTASH_TOKEN`とreceiver URLを登録してください。0005は既存LINE jobの`expires_at`を`created_at + 15分`以内に正規化し、期限切れjobを`failed`/`skipped`として再publish対象外にします。適用前にDBバックアップと対象件数を確認し、適用後に次のSQLで残存違反がないことを確認してください。
+
+```sql
+select count(*) from public.processing_jobs
+where job_type = 'line_event_process'
+  and (expires_at is null or expires_at > created_at + interval '15 minutes');
+```
+
+rollbackはflagをfalseに戻してpublishを停止し、必要に応じてoutboxを監視してからmigrationを計画的に戻します。QStash/DB/LLMの費用は各サービスの従量料金に依存し、Phase 1では保存・publish回数×各サービス単価が概算です。
 
 ## 次の実装順
 
@@ -95,4 +103,4 @@ QStash受信側の安全な骨格を実装済みです。詳細、必要な設�
 
 `POST /webhooks/qstash/outbox-dispatch` はQStash署名付きの固定payload `{ "kind": "outbox_dispatch" }` を受け、最大10件のpending/retry_due/lease切れをclaimしてpublishします。QStash Scheduleを後からこのURLへ1分間隔などで設定すれば、未publishを回収できます。Schedule設定はQStash管理画面/APIで行い、`QSTASH_JOB_RECEIVER_URL`（HTTPS、固定path `/webhooks/qstash/jobs`、credentials/query/hashなし）とは分離します。
 
-migrationは `0001` → `0002` → `0003` → `0004` の順に適用してください。`LINE_ASYNC_PROCESSING_ENABLED` はdefault falseで、flag offではpublisher/dispatcherの外部通信はありません。publishはat-least-onceで、timeout後の重複publishを監視します（exactly-onceではありません）。job payloadにreplyToken/本文は含めません。`line_event_process` の実executorは未実装で、receiverは未実装・未知job_typeをretryable failureとして成功扱いしません。
+migrationは `0001` → `0002` → `0003` → `0004` → `0005` の順に適用してください。0005適用後、期限切れLINE jobは`publish_status = 'skipped'`（既にpublishedの場合はpublished）となり、lease token/expiryをクリアし、`next_publish_at`を無限時刻へ移して再送対象外になります。`LINE_ASYNC_PROCESSING_ENABLED` はdefault falseで、flag offではpublisher/dispatcher/receiverの外部通信・DB処理はありません。Productionではfalseを維持してください。publishはat-least-onceで、timeout後の重複publishを監視します（exactly-onceではありません）。job payloadにreplyToken/本文は含めません。`line_event_process` の実executorは未実装です。receiverは未実装・未知job_typeをretryable failureとして成功扱いせず、LINE jobは15分TTL超過後にexecutor/publish対象外になります。retryable failureでは処理job再queueとoutbox retry_due復帰を行います。

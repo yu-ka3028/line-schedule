@@ -41,6 +41,11 @@ export interface ProcessingJobStore {
     token: string,
     errorCode: string,
   ): Promise<FinishResult>;
+  failOrRequeueLineEvent?(
+    jobId: string,
+    token: string,
+    errorCode: string,
+  ): Promise<FinishResult>;
 }
 
 type RpcClient = {
@@ -114,6 +119,18 @@ export function createSupabaseProcessingJobStore(
         throw new Error('invalid processing job error code');
       const { data, error } = await client.rpc(
         'fail_or_requeue_processing_job',
+        { p_job_id: jobId, p_processing_token: token, p_error: errorCode },
+      );
+      if (error) throw error;
+      return finishOutcome(one(data).outcome);
+    },
+    async failOrRequeueLineEvent(jobId, token, errorCode) {
+      assertUuid(jobId, 'job id');
+      assertUuid(token, 'processing token');
+      if (!/^[a-z][a-z0-9_]{0,63}$/.test(errorCode))
+        throw new Error('invalid processing job error code');
+      const { data, error } = await client.rpc(
+        'fail_or_requeue_line_event_job',
         { p_job_id: jobId, p_processing_token: token, p_error: errorCode },
       );
       if (error) throw error;

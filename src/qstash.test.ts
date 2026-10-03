@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
 import type { ProcessingJobStore } from './processing-job-store.js';
@@ -30,6 +30,10 @@ function store(
   };
 }
 
+beforeEach(() => {
+  process.env.LINE_ASYNC_PROCESSING_ENABLED = 'true';
+});
+
 afterEach(() => {
   delete process.env.LINE_ASYNC_PROCESSING_ENABLED;
 });
@@ -41,7 +45,23 @@ const request = (body = JSON.stringify({ jobId: id })) => ({
 });
 
 describe('QStash jobs webhook', () => {
+  it('does not access jobs store or executor when receiver flag is off', async () => {
+    delete process.env.LINE_ASYNC_PROCESSING_ENABLED;
+    const jobs = store({ claim: vi.fn() });
+    const executor = vi.fn();
+    const verify = vi.fn();
+    const response = await app(jobs, verify, executor).request(
+      '/webhooks/qstash/jobs',
+      request(),
+    );
+    expect(response.status).toBe(200);
+    expect(verify).not.toHaveBeenCalled();
+    expect(jobs.claim).not.toHaveBeenCalled();
+    expect(executor).not.toHaveBeenCalled();
+  });
+
   it('does not access outbox or verify when dispatcher flag is off', async () => {
+    delete process.env.LINE_ASYNC_PROCESSING_ENABLED;
     const outbox = {
       claimBatch: vi.fn(),
       claim: vi.fn(),
@@ -177,10 +197,15 @@ describe('QStash jobs webhook', () => {
     expect(jobs.succeed).toHaveBeenCalledWith(id, 'token');
   });
 
-  it('requeues executor failures without exposing the error', async () => {
+  it('requeues LINE executor failures and resets outbox retry state', async () => {
     const jobs = store({
-      claim: vi.fn().mockResolvedValue({ outcome: 'claimed', token: 'token' }),
+      claim: vi.fn().mockResolvedValue({
+        outcome: 'claimed',
+        token: 'token',
+        jobType: 'line_event_process',
+      }),
       failOrRequeue: vi.fn().mockResolvedValue('requeued'),
+      failOrRequeueLineEvent: vi.fn().mockResolvedValue('requeued'),
     });
     const response = await app(
       jobs,
@@ -189,11 +214,35 @@ describe('QStash jobs webhook', () => {
     ).request('/webhooks/qstash/jobs', request());
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: 'job_retryable_failure' });
+    expect(jobs.failOrRequeueLineEvent).toHaveBeenCalledWith(
+      id,
+      'token',
+      'handler_unavailable',
+    );
+  });
+
+  it('keeps calendar failure handling on the existing RPC', async () => {
+    const jobs = store({
+      claim: vi.fn().mockResolvedValue({
+        outcome: 'claimed',
+        token: 'token',
+        jobType: 'calendar_create',
+      }),
+      failOrRequeue: vi.fn().mockResolvedValue('requeued'),
+      failOrRequeueLineEvent: vi.fn(),
+    });
+    const response = await app(
+      jobs,
+      undefined,
+      vi.fn().mockRejectedValue(new Error('secret')),
+    ).request('/webhooks/qstash/jobs', request());
+    expect(response.status).toBe(500);
     expect(jobs.failOrRequeue).toHaveBeenCalledWith(
       id,
       'token',
       'handler_unavailable',
     );
+    expect(jobs.failOrRequeueLineEvent).not.toHaveBeenCalled();
   });
 
   it('rejects malformed payloads after verification', async () => {
