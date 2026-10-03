@@ -15,6 +15,15 @@ import {
   parseProcessingJobPayload,
   type JobExecutor,
 } from './processing-jobs.js';
+import { createLinePushExecutor } from './line-push-executor.js';
+import {
+  createLinePushClient,
+  type LinePushClient,
+} from './line-push-client.js';
+import {
+  createSupabaseLinePushStore,
+  type LinePushStore,
+} from './line-push-store.js';
 import {
   createSupabaseProcessingJobStore,
   type ProcessingJobStore,
@@ -58,6 +67,9 @@ export type AppDependencies = {
     verifier?: QstashSignatureVerifier;
     jobs?: ProcessingJobStore;
     executor?: JobExecutor;
+    linePushStore?: LinePushStore;
+    linePushClient?: LinePushClient;
+    linePushUsageLogs?: UsageLogStore;
     outbox?: LineOutboxStore;
     publisher?: QstashPublisher;
   };
@@ -210,15 +222,7 @@ export function createApp(
     // The payload remains jobId-only; the trusted DB claim supplies job_type.
     // Unknown/unimplemented types must stay retryable and never be successful.
     const jobType = claim.jobType ?? 'line_event_process';
-    const executor =
-      dependencies.qstash?.executor ??
-      (async () => {
-        throw new Error(
-          jobType === 'line_event_process'
-            ? 'handler_unavailable'
-            : 'unknown_job_type',
-        );
-      });
+    let executor = dependencies.qstash?.executor;
     try {
       if (
         jobType !== 'line_event_process' &&
@@ -227,7 +231,37 @@ export function createApp(
         )
       )
         throw new Error('unknown_job_type');
+      if (!executor && jobType === 'line_event_process') {
+        const pushStore =
+          dependencies.qstash?.linePushStore ?? createSupabaseLinePushStore();
+        const pushClient =
+          dependencies.qstash?.linePushClient ?? createLinePushClient();
+        executor = createLinePushExecutor(pushStore, pushClient);
+      }
+      if (!executor) throw new Error('handler_unavailable');
+      const pushUsage =
+        jobType === 'line_event_process'
+          ? dependencies.qstash?.linePushUsageLogs
+          : undefined;
+      try {
+        await pushUsage?.record({
+          schema_version: 1,
+          operation: 'line_push',
+          outcome: 'line_push_attempt',
+        });
+      } catch {
+        /* telemetry must not affect delivery */
+      }
       await executor(job, claim.token);
+      try {
+        await pushUsage?.record({
+          schema_version: 1,
+          operation: 'line_push',
+          outcome: 'line_push_sent',
+        });
+      } catch {
+        /* telemetry must not affect delivery */
+      }
       const result = await store.succeed(job.jobId, claim.token);
       return result === 'succeeded'
         ? c.json({ ok: true }, 200)
