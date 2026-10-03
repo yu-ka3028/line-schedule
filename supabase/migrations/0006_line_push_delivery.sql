@@ -28,7 +28,16 @@ language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare j public.processing_jobs%rowtype; d public.line_push_deliveries%rowtype; u public.users%rowtype;
 begin
-  select * into j from public.processing_jobs where id = p_job_id and job_type = 'line_event_process' for update;
+  -- The delivery claim is subordinate to the processing-job lease.  In
+  -- particular, never let an old QStash delivery claim a delivery after the
+  -- job lease has been recovered by another worker.
+  select * into j from public.processing_jobs
+    where id = p_job_id
+      and job_type = 'line_event_process'
+      and status = 'processing'
+      and processing_token = p_processing_token
+      and processing_lease_expires_at > now()
+    for update;
   if not found then return query select 'not_found'::text, null::text, null::uuid; return; end if;
   insert into public.line_push_deliveries(processing_job_id, user_id)
     values (j.id, j.user_id) on conflict (processing_job_id) do nothing;
@@ -40,7 +49,7 @@ begin
   if d.status = 'blocked' or d.status = 'failed' then return query select d.status::text, null::text, d.retry_key; return; end if;
   if d.status = 'sending' and d.lease_expires_at > now() and d.processing_token = p_processing_token then return query select 'busy'::text, null::text, d.retry_key; return; end if;
   if d.next_attempt_at > now() then return query select 'not_due'::text, null::text, d.retry_key; return; end if;
-  if d.attempt >= 5 then update public.line_push_deliveries set status = 'failed', last_error = 'retryable' where id = d.id; return query select 'failed'::text, null::text, d.retry_key; return; end if;
+  if d.attempt >= 5 then update public.line_push_deliveries set status = 'failed', last_error = 'retryable', lease_expires_at = null, processing_token = null where id = d.id; return query select 'failed'::text, null::text, d.retry_key; return; end if;
   update public.line_push_deliveries set status = 'sending', attempt = attempt + 1, processing_token = p_processing_token, lease_expires_at = now() + interval '5 minutes', last_error = null where id = d.id;
   return query select 'claimed'::text, u.line_user_id, d.retry_key;
 end; $$;

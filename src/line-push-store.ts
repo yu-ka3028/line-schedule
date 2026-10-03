@@ -6,7 +6,13 @@ export type DeliveryClaim =
   | { outcome: 'claimed'; recipientId: string; retryKey: string }
   | {
       outcome:
-        'sent' | 'busy' | 'not_due' | 'blocked' | 'not_found' | 'expired';
+        | 'sent'
+        | 'busy'
+        | 'not_due'
+        | 'blocked'
+        | 'not_found'
+        | 'expired'
+        | 'failed';
     };
 
 export interface LinePushStore {
@@ -64,9 +70,15 @@ export class SupabaseLinePushStore implements LinePushStore {
     }
     if (
       typeof outcome !== 'string' ||
-      !['sent', 'busy', 'not_due', 'blocked', 'not_found', 'expired'].includes(
-        outcome,
-      )
+      ![
+        'sent',
+        'busy',
+        'not_due',
+        'blocked',
+        'not_found',
+        'expired',
+        'failed',
+      ].includes(outcome)
     )
       throw new Error('invalid line push outcome');
     return {

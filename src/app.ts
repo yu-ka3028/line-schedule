@@ -15,7 +15,11 @@ import {
   parseProcessingJobPayload,
   type JobExecutor,
 } from './processing-jobs.js';
-import { createLinePushExecutor } from './line-push-executor.js';
+import {
+  createLinePushExecutor,
+  LinePushRetryableError,
+  type LinePushExecutorResult,
+} from './line-push-executor.js';
 import {
   createLinePushClient,
   type LinePushClient,
@@ -223,6 +227,7 @@ export function createApp(
     // Unknown/unimplemented types must stay retryable and never be successful.
     const jobType = claim.jobType ?? 'line_event_process';
     let executor = dependencies.qstash?.executor;
+    let pushUsage: UsageLogStore | undefined;
     try {
       if (
         jobType !== 'line_event_process' &&
@@ -239,10 +244,18 @@ export function createApp(
         executor = createLinePushExecutor(pushStore, pushClient);
       }
       if (!executor) throw new Error('handler_unavailable');
-      const pushUsage =
-        jobType === 'line_event_process'
-          ? dependencies.qstash?.linePushUsageLogs
-          : undefined;
+      if (jobType === 'line_event_process') {
+        pushUsage = dependencies.qstash?.linePushUsageLogs;
+        if (!pushUsage) {
+          try {
+            pushUsage = createSupabaseUsageLogStore();
+          } catch (error) {
+            if (!(error instanceof ConfigurationError)) throw error;
+            // Delivery remains available when optional telemetry is not
+            // configured; the feature flag still prevents this path entirely.
+          }
+        }
+      }
       try {
         await pushUsage?.record({
           schema_version: 1,
@@ -252,12 +265,16 @@ export function createApp(
       } catch {
         /* telemetry must not affect delivery */
       }
-      await executor(job, claim.token);
+      const execution = (await executor(
+        job,
+        claim.token,
+      )) as LinePushExecutorResult | void;
+      const outcome = execution?.outcome ?? 'sent';
       try {
         await pushUsage?.record({
           schema_version: 1,
           operation: 'line_push',
-          outcome: 'line_push_sent',
+          outcome: `line_push_${outcome}`,
         });
       } catch {
         /* telemetry must not affect delivery */
@@ -266,8 +283,23 @@ export function createApp(
       return result === 'succeeded'
         ? c.json({ ok: true }, 200)
         : c.json({ error: 'job_store_unavailable' }, 500);
-    } catch {
+    } catch (error) {
       try {
+        if (jobType === 'line_event_process' && pushUsage) {
+          try {
+            await pushUsage.record({
+              schema_version: 1,
+              operation: 'line_push',
+              outcome:
+                error instanceof LinePushRetryableError ||
+                error instanceof Error
+                  ? 'line_push_retry'
+                  : 'line_push_terminal',
+            });
+          } catch {
+            /* telemetry must not affect delivery */
+          }
+        }
         const result =
           jobType === 'line_event_process' && store.failOrRequeueLineEvent
             ? await store.failOrRequeueLineEvent(
