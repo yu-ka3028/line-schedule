@@ -2,18 +2,29 @@
 -- LINE jobs are intentionally short-lived so an old backlog is never pushed.
 update public.processing_jobs
 set expires_at = created_at + interval '15 minutes'
-where job_type = 'line_event_process' and expires_at is null;
+where job_type = 'line_event_process'
+  and (expires_at is null or expires_at > created_at + interval '15 minutes');
 
 alter table public.processing_jobs
   add constraint processing_jobs_line_expiry_check
   check (job_type <> 'line_event_process' or expires_at is not null);
 
+-- `skipped` is terminal for the publish outbox, but distinct from a message
+-- that was actually published. Keep the timestamp non-null and out of range.
+alter table public.processing_jobs
+  drop constraint processing_jobs_publish_status_check;
+alter table public.processing_jobs
+  add constraint processing_jobs_publish_status_check
+  check (publish_status in ('pending', 'publishing', 'published', 'retry_due', 'skipped'));
+
 update public.processing_jobs
-set status = 'failed', last_error = 'expired', processing_token = null,
-    processing_lease_expires_at = null, publish_lease_token = null,
-    publish_lease_expires_at = null
-where job_type = 'line_event_process' and expires_at <= now()
-  and status not in ('succeeded', 'failed');
+set status = case when status not in ('succeeded', 'failed') then 'failed' else status end,
+    last_error = case when status not in ('succeeded', 'failed') then 'expired' else last_error end,
+    processing_token = null, processing_lease_expires_at = null,
+    publish_status = case when publish_status = 'published' then 'published' else 'skipped' end,
+    publish_lease_token = null, publish_lease_expires_at = null,
+    next_publish_at = 'infinity'::timestamptz
+where job_type = 'line_event_process' and expires_at <= now();
 
 create or replace function public.save_line_event_and_enqueue_job(
   p_line_event_id text,
@@ -59,9 +70,16 @@ begin
   select * into j from public.processing_jobs where id = p_job_id for update;
   if not found then return query select 'not_found'::text, null::uuid, null::text; return; end if;
   if j.expires_at is not null and j.expires_at <= now() then
-    update public.processing_jobs set status = 'failed', last_error = 'expired',
-      processing_token = null, processing_lease_expires_at = null
-      where id = j.id and status not in ('succeeded', 'failed');
+    if j.job_type = 'line_event_process' then
+      update public.processing_jobs
+        set status = case when status not in ('succeeded', 'failed') then 'failed' else status end,
+          last_error = case when status not in ('succeeded', 'failed') then 'expired' else last_error end,
+          processing_token = null, processing_lease_expires_at = null,
+          publish_status = case when publish_status = 'published' then 'published' else 'skipped' end,
+          publish_lease_token = null, publish_lease_expires_at = null,
+          next_publish_at = 'infinity'::timestamptz
+        where id = j.id;
+    end if;
     return query select 'expired'::text, null::uuid, j.job_type; return;
   end if;
   if not exists (select 1 from public.users u where u.id = j.user_id and u.status = 'active') then
@@ -91,9 +109,14 @@ begin
   select * into j from public.processing_jobs where id = p_job_id for update;
   if not found or j.job_type <> 'line_event_process' then return query select 'not_found'::text, null::uuid; return; end if;
   if j.expires_at <= now() then
-    update public.processing_jobs set status = 'failed', last_error = 'expired',
-      publish_lease_token = null, publish_lease_expires_at = null
-      where id = j.id and status not in ('succeeded', 'failed');
+    update public.processing_jobs
+      set status = case when status not in ('succeeded', 'failed') then 'failed' else status end,
+        last_error = case when status not in ('succeeded', 'failed') then 'expired' else last_error end,
+        processing_token = null, processing_lease_expires_at = null,
+        publish_status = case when publish_status = 'published' then 'published' else 'skipped' end,
+        publish_lease_token = null, publish_lease_expires_at = null,
+        next_publish_at = 'infinity'::timestamptz
+      where id = j.id;
     return query select 'not_found'::text, null::uuid; return;
   end if;
   if j.publish_status = 'published' then return query select 'published'::text, null::uuid; return; end if;
@@ -112,10 +135,14 @@ as $$
 declare j public.processing_jobs%rowtype; t uuid;
 begin
   if p_limit is null or p_limit < 1 or p_limit > 100 then raise exception 'invalid batch limit'; end if;
-  update public.processing_jobs set status = 'failed', last_error = 'expired',
-    publish_lease_token = null, publish_lease_expires_at = null
-    where job_type = 'line_event_process' and expires_at <= now()
-      and status not in ('succeeded', 'failed');
+  update public.processing_jobs
+    set status = case when status not in ('succeeded', 'failed') then 'failed' else status end,
+      last_error = case when status not in ('succeeded', 'failed') then 'expired' else last_error end,
+      processing_token = null, processing_lease_expires_at = null,
+      publish_status = case when publish_status = 'published' then 'published' else 'skipped' end,
+      publish_lease_token = null, publish_lease_expires_at = null,
+      next_publish_at = 'infinity'::timestamptz
+    where job_type = 'line_event_process' and expires_at <= now();
   for j in
     select * from public.processing_jobs
     where job_type = 'line_event_process' and expires_at > now()
@@ -136,13 +163,22 @@ create or replace function public.fail_or_requeue_line_event_job(
 ) returns table(outcome text)
 language plpgsql security definer set search_path = public, pg_temp
 as $$
-declare a integer;
+declare j public.processing_jobs%rowtype;
 begin
-  select attempts into a from public.processing_jobs
+  select * into j from public.processing_jobs
     where id = p_job_id and job_type = 'line_event_process'
       and status = 'processing' and processing_token = p_processing_token for update;
   if not found then return query select 'token_mismatch'::text; return; end if;
-  if a >= 5 then
+  if j.expires_at <= now() then
+    update public.processing_jobs set status = 'failed', last_error = 'expired',
+      processing_token = null, processing_lease_expires_at = null,
+      publish_status = case when publish_status = 'published' then 'published' else 'skipped' end,
+      publish_lease_token = null, publish_lease_expires_at = null,
+      next_publish_at = 'infinity'::timestamptz
+      where id = p_job_id;
+    return query select 'failed'::text; return;
+  end if;
+  if j.attempts >= 5 then
     update public.processing_jobs set status = 'failed', last_error = left(p_error, 200),
       processing_token = null, processing_lease_expires_at = null
       where id = p_job_id;
