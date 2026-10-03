@@ -31,7 +31,7 @@ import {
   createLineReplyClient,
   type ReplyClient,
 } from './line-reply-client.js';
-import { processSyncText } from './sync-text-processor.js';
+import { logSyncSkip, processSyncText } from './sync-text-processor.js';
 import {
   createSupabaseUsageLogStore,
   type UsageLogStore,
@@ -230,13 +230,19 @@ export function createApp(
       candidate.source.type === 'user'
         ? (candidate as import('./line-events.js').LineTextMessageEvent)
         : undefined;
-    if (textEvent && saveResult?.inserted === true) {
+    if (!textEvent) {
+      logSyncSkip('not_single_user_text');
+    } else if (saveResult?.inserted !== true) {
+      logSyncSkip('not_inserted');
+    } else {
       const now = Date.now();
       for (const [eventId, seenAt] of seenTextEvents) {
         if (now - seenAt >= seenTextEventTtlMs) seenTextEvents.delete(eventId);
       }
-      if (seenTextEvents.has(textEvent.webhookEventId))
+      if (seenTextEvents.has(textEvent.webhookEventId)) {
+        logSyncSkip('duplicate');
         return c.json({ ok: true }, 200);
+      }
       while (seenTextEvents.size >= seenTextEventLimit) {
         const oldestEventId = seenTextEvents.keys().next().value;
         if (oldestEventId === undefined) break;
