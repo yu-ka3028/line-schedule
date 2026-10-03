@@ -74,6 +74,10 @@ export type QstashConfig = {
   receiverUrl: string;
 };
 
+export function isLineAsyncProcessingEnabled(): boolean {
+  return process.env.LINE_ASYNC_PROCESSING_ENABLED === 'true';
+}
+
 export function readQstashConfig(): QstashConfig {
   return {
     currentSigningKey: requiredEnvironment('QSTASH_CURRENT_SIGNING_KEY'),

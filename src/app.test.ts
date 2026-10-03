@@ -127,7 +127,7 @@ describe('app', () => {
     });
   });
 
-  it('synchronously replies to a single user text event with a fake client', async () => {
+  it('does not synchronously reply to a single user text event', async () => {
     process.env.LINE_CHANNEL_SECRET = dummySecret;
     const body = JSON.stringify({
       events: [
@@ -155,10 +155,8 @@ describe('app', () => {
       body,
     });
     expect(response.status).toBe(200);
-    expect(reply).toHaveBeenCalledWith('reply-token', expect.any(Number));
-    expect(usage.record).toHaveBeenCalledWith(
-      expect.objectContaining({ outcome: 'replied' }),
-    );
+    expect(reply).not.toHaveBeenCalled();
+    expect(usage.record).not.toHaveBeenCalled();
   });
 
   it('does not reply when persistence reports a duplicate insert', async () => {
@@ -223,7 +221,7 @@ describe('app', () => {
     expect(reply).not.toHaveBeenCalled();
   });
 
-  it('suppresses repeated and concurrent replies for the same event', async () => {
+  it('does not reply to repeated or concurrent events', async () => {
     process.env.LINE_CHANNEL_SECRET = dummySecret;
     const body = JSON.stringify({
       events: [
@@ -255,10 +253,10 @@ describe('app', () => {
       app.request('/webhooks/line', init),
     ]);
     expect(responses.every((response) => response.status === 200)).toBe(true);
-    expect(reply).toHaveBeenCalledOnce();
+    expect(reply).not.toHaveBeenCalled();
 
     await app.request('/webhooks/line', init);
-    expect(reply).toHaveBeenCalledOnce();
+    expect(reply).not.toHaveBeenCalled();
   });
 
   it('returns 200 when usage or reply fails', async () => {

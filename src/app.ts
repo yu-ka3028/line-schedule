@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 
 import {
   ConfigurationError,
+  isLineAsyncProcessingEnabled,
   readQstashConfig,
   type QstashConfig,
 } from './config.js';
@@ -23,15 +24,21 @@ import {
   type LineEventStore,
 } from './line-event-store.js';
 import {
+  dispatchLineEventPublish,
+  createSupabaseLineOutboxStore,
+  type LineOutboxStore,
+} from './line-outbox.js';
+import {
+  createQstashPublisher,
+  readQstashPublisherConfig,
+  type QstashPublisher,
+} from './qstash-publisher.js';
+import {
   LineEventValidationError,
   parseLineWebhookPayload,
 } from './line-events.js';
 import { readBodyWithLimit, verifyLineSignature } from './line-signature.js';
-import {
-  createLineReplyClient,
-  type ReplyClient,
-} from './line-reply-client.js';
-import { logSyncSkip, processSyncText } from './sync-text-processor.js';
+
 import {
   createSupabaseUsageLogStore,
   type UsageLogStore,
@@ -39,8 +46,11 @@ import {
 
 export type AppDependencies = {
   line?: {
-    replyClient?: ReplyClient;
+    /** @deprecated synchronous replies are intentionally ignored. */
+    replyClient?: unknown;
     usageLogs?: UsageLogStore;
+    outbox?: LineOutboxStore;
+    publisher?: QstashPublisher;
   };
   qstash?: {
     config?: QstashConfig;
@@ -55,9 +65,6 @@ export function createApp(
   dependencies: AppDependencies = {},
 ): Hono {
   const app = new Hono();
-  const seenTextEvents = new Map<string, number>();
-  const seenTextEventTtlMs = 10 * 60 * 1000;
-  const seenTextEventLimit = 1000;
 
   app.post('/webhooks/qstash/jobs', async (c) => {
     let config: QstashConfig;
@@ -156,7 +163,6 @@ export function createApp(
   app.get('/healthz', (c) => c.json({ ok: true }));
 
   app.post('/webhooks/line', async (c) => {
-    const webhookStartedAt = Date.now();
     const channelSecret = process.env.LINE_CHANNEL_SECRET;
     if (!channelSecret) {
       return c.json({ error: 'configuration_unavailable' }, 503);
@@ -209,7 +215,6 @@ export function createApp(
       })();
     if (!eventStore) return c.json({ error: 'configuration_unavailable' }, 503);
 
-    const persistenceStarted = performance.now();
     let saveResult;
     try {
       saveResult = await eventStore.save(payload);
@@ -218,37 +223,30 @@ export function createApp(
       return c.json({ error: 'persistence_unavailable' }, 500);
     }
 
-    const candidate = payload.events[0];
-    const persistenceMs = Math.max(
-      0,
-      Math.round(performance.now() - persistenceStarted),
-    );
-    const textEvent =
-      payload.events.length === 1 &&
-      candidate?.type === 'message' &&
-      (candidate.message as { type?: string }).type === 'text' &&
-      candidate.source.type === 'user'
-        ? (candidate as import('./line-events.js').LineTextMessageEvent)
-        : undefined;
-    if (!textEvent) {
-      logSyncSkip('not_single_user_text');
-    } else if (saveResult?.inserted !== true) {
-      logSyncSkip('not_inserted');
-    } else {
-      const now = Date.now();
-      for (const [eventId, seenAt] of seenTextEvents) {
-        if (now - seenAt >= seenTextEventTtlMs) seenTextEvents.delete(eventId);
+    if (!isLineAsyncProcessingEnabled()) return c.json({ ok: true }, 200);
+
+    const jobIds = Array.isArray(saveResult?.jobIds) ? saveResult.jobIds : [];
+    let publishStatus: 'published' | 'retry_due' | 'skipped' = 'skipped';
+    if (jobIds.length > 0) {
+      try {
+        const outbox =
+          dependencies.line?.outbox ?? createSupabaseLineOutboxStore();
+        const publisher =
+          dependencies.line?.publisher ??
+          createQstashPublisher(readQstashPublisherConfig());
+        for (const jobId of jobIds) {
+          const result = await dispatchLineEventPublish(
+            jobId,
+            outbox,
+            publisher,
+          );
+          if (result === 'retry_due') publishStatus = result;
+          else if (result === 'published' && publishStatus === 'skipped')
+            publishStatus = result;
+        }
+      } catch {
+        publishStatus = 'retry_due';
       }
-      if (seenTextEvents.has(textEvent.webhookEventId)) {
-        logSyncSkip('duplicate');
-        return c.json({ ok: true }, 200);
-      }
-      while (seenTextEvents.size >= seenTextEventLimit) {
-        const oldestEventId = seenTextEvents.keys().next().value;
-        if (oldestEventId === undefined) break;
-        seenTextEvents.delete(oldestEventId);
-      }
-      seenTextEvents.set(textEvent.webhookEventId, now);
       let usageLogs = dependencies.line?.usageLogs;
       if (!usageLogs) {
         try {
@@ -257,12 +255,15 @@ export function createApp(
           usageLogs = undefined;
         }
       }
-      await processSyncText(textEvent, {
-        replyClient: dependencies.line?.replyClient ?? createLineReplyClient(),
-        usageLogs,
-        deadlineAt: webhookStartedAt + 800,
-        persistenceMs,
-      });
+      try {
+        await usageLogs?.record({
+          schema_version: 1,
+          outcome: 'outbox_publish',
+          publish_status: publishStatus,
+        });
+      } catch {
+        /* telemetry must not change the LINE response */
+      }
     }
 
     return c.json({ ok: true }, 200);

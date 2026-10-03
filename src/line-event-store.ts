@@ -5,7 +5,7 @@ import { encryptWebhookPayload } from './crypto.js';
 import type { LineEvent, LineWebhookPayload } from './line-events.js';
 import { createSupabaseAdminClient } from './supabase-admin.js';
 
-export type LineEventSaveResult = { inserted: boolean };
+export type LineEventSaveResult = { inserted: boolean; jobIds?: string[] };
 
 export interface LineEventStore {
   save(payload: LineWebhookPayload): Promise<LineEventSaveResult>;
@@ -61,10 +61,42 @@ export class SupabaseLineEventStore implements LineEventStore {
 
   async save(payload: LineWebhookPayload): Promise<LineEventSaveResult> {
     let inserted = false;
+    const jobIds: string[] = [];
     // Each event is encrypted independently. This intentionally does not persist
     // the raw webhook body, which may contain unrelated users or group/room data.
     for (const event of payload.events) {
       if (event.source.type !== 'user') continue;
+      const ciphertext = encryptWebhookPayload(
+        JSON.stringify(persistenceEvent(event)),
+        this.encryptionKey,
+      );
+
+      // The RPC is the production path: event and outbox job share one
+      // transaction. The fallback only keeps older unit-test doubles useful.
+      if (typeof (this.client as { rpc?: unknown }).rpc === 'function') {
+        const result = await this.client.rpc(
+          'save_line_event_and_enqueue_job',
+          {
+            p_line_event_id: event.webhookEventId,
+            p_line_user_id: event.source.userId,
+            p_message_type: messageType(event),
+            p_payload_ciphertext: ciphertext,
+          },
+        );
+        if (result.error) throw result.error;
+        const row = Array.isArray(result.data) ? result.data[0] : result.data;
+        if (!row || typeof row !== 'object')
+          throw new Error('invalid event RPC response');
+        const record = row as { inserted?: unknown; job_id?: unknown };
+        if (
+          typeof record.inserted !== 'boolean' ||
+          typeof record.job_id !== 'string'
+        )
+          throw new Error('invalid event RPC response');
+        inserted ||= record.inserted;
+        jobIds.push(record.job_id);
+        continue;
+      }
 
       const userResult = await this.client
         .from('users')
@@ -75,7 +107,6 @@ export class SupabaseLineEventStore implements LineEventStore {
         .select('id')
         .single();
       if (userResult.error) throw userResult.error;
-
       try {
         const eventResult = await this.client
           .from('inbound_events')
@@ -83,10 +114,7 @@ export class SupabaseLineEventStore implements LineEventStore {
             user_id: userResult.data.id,
             line_event_id: event.webhookEventId,
             message_type: messageType(event),
-            payload_ciphertext: encryptWebhookPayload(
-              JSON.stringify(persistenceEvent(event)),
-              this.encryptionKey,
-            ),
+            payload_ciphertext: ciphertext,
           })
           .select('id')
           .single();
@@ -96,7 +124,7 @@ export class SupabaseLineEventStore implements LineEventStore {
         if (!isLineEventDuplicate(error)) throw error;
       }
     }
-    return { inserted };
+    return jobIds.length > 0 ? { inserted, jobIds } : { inserted };
   }
 }
 

@@ -5,9 +5,10 @@ import { createSupabaseAdminClient } from './supabase-admin.js';
 export type SyncUsageMetadata = {
   schema_version: 1;
   outcome: string;
-  total_ms: number;
-  persistence_ms: number;
-  reply_ms: number;
+  total_ms?: number;
+  persistence_ms?: number;
+  reply_ms?: number;
+  publish_status?: 'published' | 'retry_due' | 'skipped';
 };
 
 export interface UsageLogStore {
@@ -19,7 +20,9 @@ export class SupabaseUsageLogStore implements UsageLogStore {
 
   async record(metadata: SyncUsageMetadata): Promise<void> {
     const result = await this.client.from('usage_logs').insert({
-      operation: 'sync_text_webhook',
+      operation: metadata.publish_status
+        ? 'line_outbox_publish'
+        : 'sync_text_webhook',
       quantity: 1,
       estimated_cost_yen: 0,
       metadata,

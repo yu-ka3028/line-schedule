@@ -46,7 +46,7 @@ npm run build
 
 - `src/app.ts`: Hono アプリ本体
 - `api/[[...route]].ts`: Vercel Functions のエントリポイント
-- `POST /webhooks/line`: 署名・入力検証後、ユーザー由来イベントをSupabaseへ冪等保存する。単一のuser由来textイベントだけは保存後に固定文言を同期Replyし、処理時間をbest-effortでusage_logsへ記録する
+- `POST /webhooks/line`: 署名・入力検証後、ユーザー由来イベントと`line_event_process` outbox jobを原子的に保存する。同期Replyは行わず、成功時は必ず200を返す
 - Supabase service role、本文暗号化、イベント保存を実装済み。QStashは署名検証・ジョブ状態管理の安全な骨格を実装済み
 
 ## 未実装範囲
@@ -54,7 +54,7 @@ npm run build
 - LINE Webhook の業務イベント処理（現時点の同期対象は単一user/textのみ。group/room、非text、複数イベントはReplyしない）
 - Supabase実環境への接続確認（単体テストは外部接続なし）、実LINE送信確認。同期処理の実測値は実LINE channel access tokenで未確認
 - グループ・ルームイベントの個人登録（MVPでは保存対象外）
-- QStashのpublish、Calendar実処理、実環境でのジョブ実行確認。同期処理からQStashへ切り替える判断は実測したusage_logsの処理時間・Reply結果を確認してから行う
+- Calendar/LLM executorは未実装。QStash publishは`LINE_ASYNC_PROCESSING_ENABLED=true`の場合だけ試行する（未設定/falseがdefault）。executor実装と検証なしに本番で有効化しない
 - Google OAuth、トークン保管、Google Calendar 連携
 - エラー監視、レート制限、リプレイ対策、運用設定
 
@@ -64,17 +64,16 @@ npm run build
 
 Webhook本文は最大1 MiB、1回のWebhookに含められるイベント数は最大100件です。複数イベントの保存は現時点ではイベント単位の逐次処理であり、途中失敗時に一部だけ保存される非原子的な動作です。将来、必要に応じて複数イベント保存をRPCなどで原子化してください。
 
-同期text ReplyのdeadlineはWebhook受付開始時刻から800msで、永続化時間の後にさらに800ms待つことはありません。deadline超過時やReply不能時もWebhookはHTTP 200を返します。usage_logsへの記録は残りdeadlineまたは最大100msのbest-effortで、失敗・timeoutは応答を変更しません。重複イベントは永続化の `inserted: false` とプロセス内のTTL（10分）・上限（1000件）の抑止でReplyしません。`LineEventStore.save()` の結果が `{ inserted: true }` と明確でない場合も安全側にReplyしません。抑止MapにはイベントIDのみを一時的に保持し、本文・replyToken・外部応答本文は保存しません。
+同期Replyは廃止しました。LINE access tokenは設定として残せますが返信には使用しません。`LINE_ASYNC_PROCESSING_ENABLED`がfalseの場合はイベント保存までで200、trueの場合は短いQStash publishを試行します。publish失敗はDBの`retry_due` outboxとして回収可能です。保証はexactly-onceではなく、at-least-once publishと冪等jobです。replyTokenは保存・ログ・QStash payloadに含めません。Push方式の返信が必要な場合は、executorと認可・再送設計を別途実装してください。
 
-`LineEventStore.save()` 全体のtimeoutは未実装です。保存前に200を返してデータ欠落を招かないため、現状は保存処理が完了または失敗するまで待ち、失敗時は500を返します。安全なtimeoutと部分保存・retry semanticsの設計は残課題です。
+migration `0003_line_event_outbox.sql` は未適用です。適用後、Supabase service roleでRPCを利用し、`QSTASH_TOKEN`とreceiver URLを登録してください。rollbackはflagをfalseに戻してpublishを停止し、必要に応じてoutboxを監視してからmigrationを計画的に戻します。QStash/DB/LLMの費用は各サービスの従量料金に依存し、Phase 1では保存・publish回数×各サービス単価が概算です。
 
 ## 次の実装順
 
-1. LINE Webhook のイベント処理と単発テキストイベントの入力検証
-2. Supabaseマイグレーションの適用と、backend service role を使った永続化
-3. Google OAuthと安全なトークン保管
-4. Calendar操作をQStashジョブとして実装
-5. リトライ、監視、レート制限、統合テスト
+1. `0003_line_event_outbox.sql`を適用し、flag falseでhealth/webhookを確認
+2. executor実装と外部接続なしの統合検証を完了
+3. 少量環境でflag true、publish/retry_due/重複を監視
+4. Calendar/LLM、Push返信、監視、レート制限を実装
 
 ## Supabaseマイグレーション
 
