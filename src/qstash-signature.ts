@@ -8,6 +8,7 @@ export interface QstashSignatureVerifier {
 
 export function createQstashSignatureVerifier(
   config: QstashConfig,
+  url = config.receiverUrl,
 ): QstashSignatureVerifier {
   const receiver = new Receiver({
     currentSigningKey: config.currentSigningKey,
@@ -16,6 +17,10 @@ export function createQstashSignatureVerifier(
   });
   return {
     verify: (body, signature) =>
-      receiver.verify({ body, signature, url: config.receiverUrl }),
+      receiver.verify({
+        body,
+        signature,
+        url,
+      }),
   };
 }
