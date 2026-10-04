@@ -51,6 +51,24 @@ export function validateReceiverUrl(value: string, name: string): string {
   return validateFixedHttpsUrl(value, name, '/webhooks/qstash/jobs');
 }
 
+export function validateQstashUrl(value: string, name: string): string {
+  try {
+    const parsed = new URL(value);
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.username ||
+      parsed.password ||
+      (parsed.pathname !== '' && parsed.pathname !== '/') ||
+      parsed.search ||
+      parsed.hash
+    )
+      throw new Error();
+    return value;
+  } catch {
+    throw new ConfigurationError(`${name} must be a valid URL`);
+  }
+}
+
 export function validateDispatcherUrl(value: string, name: string): string {
   return validateFixedHttpsUrl(value, name, '/webhooks/qstash/outbox-dispatch');
 }
