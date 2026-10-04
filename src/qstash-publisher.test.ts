@@ -17,18 +17,24 @@ afterEach(() => {
 });
 
 describe('QStash publisher', () => {
-  it('publishes exactly the job id payload with fixed retry policy', async () => {
+  it('publishes the exact regional request shape with a job-id-only payload', async () => {
     const publishJSON = vi.fn().mockResolvedValue({ messageId: 'msg_1' });
     const publisher = createQstashPublisher(config, { publishJSON });
     await expect(publisher.publish(jobId)).resolves.toEqual({
       messageId: 'msg_1',
     });
+    expect(publishJSON).toHaveBeenCalledTimes(1);
     expect(publishJSON).toHaveBeenCalledWith({
       url: config.receiverUrl,
       body: { jobId },
-      label: 'line-event-process',
-      deduplicationId: `line-event-process:${jobId}`,
+      deduplicationId: jobId,
     });
+    const request = publishJSON.mock.calls[0][0];
+    expect(request).not.toHaveProperty('label');
+    expect(request).not.toHaveProperty('retries');
+    expect(request.body).toEqual({ jobId });
+    expect(Object.keys(request.body)).toEqual(['jobId']);
+    expect(request.deduplicationId).toBe(jobId);
   });
 
   it.each([

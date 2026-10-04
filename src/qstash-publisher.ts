@@ -45,8 +45,7 @@ export function createQstashPublisher(
         publisherClient.publishJSON({
           url: receiverUrl,
           body: { jobId },
-          label: 'line-event-process',
-          deduplicationId: `line-event-process:${jobId}`,
+          deduplicationId: jobId,
         }),
         new Promise<never>((_, reject) =>
           setTimeout(
