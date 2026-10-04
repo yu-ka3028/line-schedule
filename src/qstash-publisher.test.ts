@@ -1,12 +1,20 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createQstashPublisher } from './qstash-publisher.js';
+import {
+  createQstashPublisher,
+  readQstashPublisherConfig,
+} from './qstash-publisher.js';
 
 const config = {
   token: 'test-token',
+  qstashUrl: 'https://qstash-us-east-1.upstash.io',
   receiverUrl: 'https://example.test/webhooks/qstash/jobs',
 };
 const jobId = '00000000-0000-4000-8000-000000000001';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('QStash publisher', () => {
   it('publishes exactly the job id payload with fixed retry policy', async () => {
@@ -18,7 +26,6 @@ describe('QStash publisher', () => {
     expect(publishJSON).toHaveBeenCalledWith({
       url: config.receiverUrl,
       body: { jobId },
-      retries: 0,
       label: 'line-event-process',
       deduplicationId: `line-event-process:${jobId}`,
     });
@@ -36,6 +43,25 @@ describe('QStash publisher', () => {
         { publishJSON: vi.fn() },
       ),
     ).toThrow('valid URL');
+  });
+
+  it.each([
+    'http://qstash-us-east-1.upstash.io',
+    'https://qstash-us-east-1.upstash.io/v2',
+    'https://user:pass@qstash-us-east-1.upstash.io',
+    'https://qstash-us-east-1.upstash.io?token=leak',
+  ])('rejects an unsafe QStash URL: %s', (qstashUrl) => {
+    expect(() =>
+      createQstashPublisher({ ...config, qstashUrl }, { publishJSON: vi.fn() }),
+    ).toThrow('valid URL');
+  });
+
+  it('reads and validates the regional QStash URL', () => {
+    vi.stubEnv('QSTASH_TOKEN', 'test-token');
+    vi.stubEnv('QSTASH_URL', config.qstashUrl);
+    vi.stubEnv('QSTASH_JOB_RECEIVER_URL', config.receiverUrl);
+
+    expect(readQstashPublisherConfig()).toEqual(config);
   });
 
   it('rejects an unknown response', async () => {
