@@ -3,7 +3,10 @@ const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type ProcessingJob = { jobId: string };
-export type JobExecutor = (job: ProcessingJob, token: string) => Promise<void>;
+export type JobExecutor = (
+  job: ProcessingJob,
+  token: string,
+) => Promise<unknown | void>;
 
 export function parseProcessingJobPayload(value: unknown): ProcessingJob {
   if (typeof value !== 'object' || value === null || Array.isArray(value))

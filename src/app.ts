@@ -16,6 +16,19 @@ import {
   type JobExecutor,
 } from './processing-jobs.js';
 import {
+  createLinePushExecutor,
+  LinePushRetryableError,
+  type LinePushExecutorResult,
+} from './line-push-executor.js';
+import {
+  createLinePushClient,
+  type LinePushClient,
+} from './line-push-client.js';
+import {
+  createSupabaseLinePushStore,
+  type LinePushStore,
+} from './line-push-store.js';
+import {
   createSupabaseProcessingJobStore,
   type ProcessingJobStore,
 } from './processing-job-store.js';
@@ -58,6 +71,9 @@ export type AppDependencies = {
     verifier?: QstashSignatureVerifier;
     jobs?: ProcessingJobStore;
     executor?: JobExecutor;
+    linePushStore?: LinePushStore;
+    linePushClient?: LinePushClient;
+    linePushUsageLogs?: UsageLogStore;
     outbox?: LineOutboxStore;
     publisher?: QstashPublisher;
   };
@@ -210,15 +226,8 @@ export function createApp(
     // The payload remains jobId-only; the trusted DB claim supplies job_type.
     // Unknown/unimplemented types must stay retryable and never be successful.
     const jobType = claim.jobType ?? 'line_event_process';
-    const executor =
-      dependencies.qstash?.executor ??
-      (async () => {
-        throw new Error(
-          jobType === 'line_event_process'
-            ? 'handler_unavailable'
-            : 'unknown_job_type',
-        );
-      });
+    let executor = dependencies.qstash?.executor;
+    let pushUsage: UsageLogStore | undefined;
     try {
       if (
         jobType !== 'line_event_process' &&
@@ -227,13 +236,70 @@ export function createApp(
         )
       )
         throw new Error('unknown_job_type');
-      await executor(job, claim.token);
+      if (!executor && jobType === 'line_event_process') {
+        const pushStore =
+          dependencies.qstash?.linePushStore ?? createSupabaseLinePushStore();
+        const pushClient =
+          dependencies.qstash?.linePushClient ?? createLinePushClient();
+        executor = createLinePushExecutor(pushStore, pushClient);
+      }
+      if (!executor) throw new Error('handler_unavailable');
+      if (jobType === 'line_event_process') {
+        pushUsage = dependencies.qstash?.linePushUsageLogs;
+        if (!pushUsage) {
+          try {
+            pushUsage = createSupabaseUsageLogStore();
+          } catch (error) {
+            if (!(error instanceof ConfigurationError)) throw error;
+            // Delivery remains available when optional telemetry is not
+            // configured; the feature flag still prevents this path entirely.
+          }
+        }
+      }
+      try {
+        await pushUsage?.record({
+          schema_version: 1,
+          operation: 'line_push',
+          outcome: 'line_push_attempt',
+        });
+      } catch {
+        /* telemetry must not affect delivery */
+      }
+      const execution = (await executor(
+        job,
+        claim.token,
+      )) as LinePushExecutorResult | void;
+      const outcome = execution?.outcome ?? 'sent';
+      try {
+        await pushUsage?.record({
+          schema_version: 1,
+          operation: 'line_push',
+          outcome: `line_push_${outcome}`,
+        });
+      } catch {
+        /* telemetry must not affect delivery */
+      }
       const result = await store.succeed(job.jobId, claim.token);
       return result === 'succeeded'
         ? c.json({ ok: true }, 200)
         : c.json({ error: 'job_store_unavailable' }, 500);
-    } catch {
+    } catch (error) {
       try {
+        if (jobType === 'line_event_process' && pushUsage) {
+          try {
+            await pushUsage.record({
+              schema_version: 1,
+              operation: 'line_push',
+              outcome:
+                error instanceof LinePushRetryableError ||
+                error instanceof Error
+                  ? 'line_push_retry'
+                  : 'line_push_terminal',
+            });
+          } catch {
+            /* telemetry must not affect delivery */
+          }
+        }
         const result =
           jobType === 'line_event_process' && store.failOrRequeueLineEvent
             ? await store.failOrRequeueLineEvent(
