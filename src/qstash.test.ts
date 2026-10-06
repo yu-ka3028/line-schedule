@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { encryptWebhookPayload } from './crypto.js';
 import { createApp } from './app.js';
 import type { ProcessingJobStore } from './processing-job-store.js';
 
@@ -36,6 +37,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.LINE_ASYNC_PROCESSING_ENABLED;
+  delete process.env.GOOGLE_OAUTH_ENABLED;
 });
 
 const request = (body = JSON.stringify({ jobId: id })) => ({
@@ -45,19 +47,150 @@ const request = (body = JSON.stringify({ jobId: id })) => ({
 });
 
 describe('QStash jobs webhook', () => {
-  it('does not access jobs store or executor when receiver flag is off', async () => {
+  it('hard-stops before claim, dependency construction, DB reads, or LINE API when async is off', async () => {
     delete process.env.LINE_ASYNC_PROCESSING_ENABLED;
     const jobs = store({ claim: vi.fn() });
+    const linePushStore = {
+      claim: vi.fn(),
+      sent: vi.fn(),
+      fail: vi.fn(),
+    };
+    const linePushClient = { push: vi.fn(), pushText: vi.fn() };
+    const processingStore = { read: vi.fn() };
     const executor = vi.fn();
     const verify = vi.fn();
-    const response = await app(jobs, verify, executor).request(
-      '/webhooks/qstash/jobs',
-      request(),
-    );
+    const response = await createApp(undefined, {
+      qstash: {
+        config,
+        verifier: { verify },
+        jobs,
+        executor,
+        linePushStore,
+        linePushClient,
+        lineOAuthPush: {
+          processingStore,
+          encryptionKey: Buffer.alloc(32),
+          createGoogleOAuthStart: vi.fn(),
+        },
+      },
+    }).request('/webhooks/qstash/jobs', request());
     expect(response.status).toBe(200);
     expect(verify).not.toHaveBeenCalled();
     expect(jobs.claim).not.toHaveBeenCalled();
     expect(executor).not.toHaveBeenCalled();
+    expect(linePushStore.claim).not.toHaveBeenCalled();
+    expect(processingStore.read).not.toHaveBeenCalled();
+    expect(linePushClient.push).not.toHaveBeenCalled();
+    expect(linePushClient.pushText).not.toHaveBeenCalled();
+  });
+
+  it('uses the fixed push path when Google OAuth is off', async () => {
+    delete process.env.GOOGLE_OAUTH_ENABLED;
+    const jobs = store({
+      claim: vi.fn().mockResolvedValue({
+        outcome: 'claimed',
+        token: 'token',
+        jobType: 'line_event_process',
+      }),
+      succeed: vi.fn().mockResolvedValue('succeeded'),
+    });
+    const linePushStore = {
+      claim: vi.fn().mockResolvedValue({
+        outcome: 'claimed',
+        recipientId: 'recipient',
+        retryKey: 'retry',
+      }),
+      sent: vi.fn().mockResolvedValue('sent'),
+      fail: vi.fn(),
+    };
+    const linePushClient = {
+      push: vi.fn().mockResolvedValue('sent'),
+      pushText: vi.fn(),
+    };
+    const processingStore = { read: vi.fn() };
+    const createGoogleOAuthStart = vi.fn();
+    const response = await createApp(undefined, {
+      qstash: {
+        config,
+        verifier: { verify: vi.fn().mockResolvedValue(true) },
+        jobs,
+        linePushStore,
+        linePushClient,
+        lineOAuthPush: {
+          processingStore,
+          encryptionKey: Buffer.alloc(32),
+          createGoogleOAuthStart,
+        },
+      },
+    }).request('/webhooks/qstash/jobs', request());
+    expect(response.status).toBe(200);
+    expect(linePushStore.claim).toHaveBeenCalledOnce();
+    expect(linePushClient.push).toHaveBeenCalledOnce();
+    expect(linePushClient.pushText).not.toHaveBeenCalled();
+    expect(processingStore.read).not.toHaveBeenCalled();
+    expect(createGoogleOAuthStart).not.toHaveBeenCalled();
+    expect(jobs.succeed).toHaveBeenCalledOnce();
+  });
+
+  it('reads the event and uses the dynamic push path when Google OAuth is on', async () => {
+    process.env.GOOGLE_OAUTH_ENABLED = 'true';
+    const jobs = store({
+      claim: vi.fn().mockResolvedValue({
+        outcome: 'claimed',
+        token: 'token',
+        jobType: 'line_event_process',
+      }),
+      succeed: vi.fn().mockResolvedValue('succeeded'),
+    });
+    const linePushStore = {
+      claim: vi.fn().mockResolvedValue({
+        outcome: 'claimed',
+        recipientId: 'recipient',
+        retryKey: 'retry',
+      }),
+      sent: vi.fn().mockResolvedValue('sent'),
+      fail: vi.fn(),
+    };
+    const encryptionKey = Buffer.alloc(32, 7);
+    const processingStore = {
+      read: vi.fn().mockResolvedValue({
+        userId: 'user',
+        payloadCiphertext: encryptWebhookPayload(
+          JSON.stringify({
+            type: 'message',
+            message: { type: 'text', text: 'Google連携' },
+          }),
+          encryptionKey,
+        ),
+      }),
+    };
+    const createGoogleOAuthStart = vi
+      .fn()
+      .mockResolvedValue('https://oauth.test');
+    const linePushClient = {
+      push: vi.fn(),
+      pushText: vi.fn().mockResolvedValue('sent'),
+    };
+    const response = await createApp(undefined, {
+      qstash: {
+        config,
+        verifier: { verify: vi.fn().mockResolvedValue(true) },
+        jobs,
+        linePushStore,
+        linePushClient,
+        lineOAuthPush: {
+          processingStore,
+          encryptionKey,
+          createGoogleOAuthStart,
+        },
+      },
+    }).request('/webhooks/qstash/jobs', request());
+    expect(response.status).toBe(200);
+    expect(processingStore.read).toHaveBeenCalledOnce();
+    expect(createGoogleOAuthStart).toHaveBeenCalledOnce();
+    expect(linePushClient.pushText).toHaveBeenCalledOnce();
+    expect(linePushClient.push).not.toHaveBeenCalled();
+    expect(jobs.succeed).toHaveBeenCalledOnce();
   });
 
   it('does not access outbox or verify when dispatcher flag is off', async () => {
