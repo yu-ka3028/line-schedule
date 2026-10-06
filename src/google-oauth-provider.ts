@@ -1,16 +1,13 @@
 import { google } from 'googleapis';
 
-export type GoogleOAuthTokenResponse = {
-  accessToken: string;
-  refreshToken?: string;
-  expiryDate: Date;
-  scopes: string[];
-  googleAccountId: string;
-};
+import type {
+  GoogleOAuthCodeExchanger,
+  GoogleOAuthTokenSet,
+} from './google-oauth-callback.js';
 
-export interface GoogleOAuthTokenProvider {
-  exchangeCode(code: string): Promise<GoogleOAuthTokenResponse>;
-}
+export type GoogleOAuthTokenResponse = GoogleOAuthTokenSet;
+
+export type GoogleOAuthTokenProvider = GoogleOAuthCodeExchanger;
 
 export type GoogleOAuthClientOptions = {
   clientId: string;
@@ -47,7 +44,7 @@ export class GoogleapisOAuthTokenProvider implements GoogleOAuthTokenProvider {
     return {
       accessToken: tokens.access_token,
       ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
-      expiryDate: new Date(tokens.expiry_date),
+      tokenExpiresAt: new Date(tokens.expiry_date),
       scopes: (tokens.scope ?? '').split(' ').filter(Boolean),
       googleAccountId: data.id,
     };

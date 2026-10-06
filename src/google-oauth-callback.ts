@@ -1,5 +1,6 @@
 import { encryptWebhookPayload } from './crypto.js';
 import type { GoogleConnectionStore } from './google-connection-store.js';
+import { GOOGLE_CALENDAR_EVENTS_SCOPE } from './google-oauth.js';
 import {
   hashGoogleOAuthState,
   type GoogleOAuthStateStore,
@@ -12,7 +13,7 @@ export type GoogleOAuthTokenSet = {
   googleAccountId: string;
   accessToken: string;
   refreshToken?: string | null;
-  tokenExpiresAt: Date | null;
+  tokenExpiresAt: Date;
   scopes: string[];
 };
 
@@ -49,7 +50,7 @@ function requiredInput(
   return value;
 }
 
-function validateTokenSet(tokens: GoogleOAuthTokenSet): void {
+function validateTokenSet(tokens: GoogleOAuthTokenSet, now: Date): void {
   requiredInput(tokens.googleAccountId, 'account', 256);
   requiredInput(tokens.accessToken, 'access token', 4096);
   if (tokens.refreshToken !== undefined && tokens.refreshToken !== null)
@@ -63,11 +64,14 @@ function validateTokenSet(tokens: GoogleOAuthTokenSet): void {
     )
   )
     throw new GoogleOAuthCallbackError('Invalid Google OAuth scopes');
+  if (!tokens.scopes.includes(GOOGLE_CALENDAR_EVENTS_SCOPE))
+    throw new GoogleOAuthCallbackError(
+      'Required Google Calendar scope is missing',
+    );
   if (
-    (tokens.tokenExpiresAt !== null &&
-      !(tokens.tokenExpiresAt instanceof Date)) ||
-    (tokens.tokenExpiresAt !== null &&
-      Number.isNaN(tokens.tokenExpiresAt.getTime()))
+    !(tokens.tokenExpiresAt instanceof Date) ||
+    Number.isNaN(tokens.tokenExpiresAt.getTime()) ||
+    tokens.tokenExpiresAt.getTime() <= now.getTime()
   )
     throw new GoogleOAuthCallbackError('Invalid Google OAuth expiry');
 }
@@ -94,7 +98,7 @@ export async function handleGoogleOAuthCallback(
   } catch {
     throw new GoogleOAuthCallbackError('Google OAuth code exchange failed');
   }
-  validateTokenSet(tokens);
+  validateTokenSet(tokens, now);
 
   const refreshTokenCiphertext =
     tokens.refreshToken == null
