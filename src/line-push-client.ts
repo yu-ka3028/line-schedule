@@ -12,6 +12,11 @@ export type FetchLike = (
 
 export interface LinePushClient {
   push(recipientId: string, retryKey: string): Promise<LinePushResult>;
+  pushText?(
+    recipientId: string,
+    retryKey: string,
+    text: string,
+  ): Promise<LinePushResult>;
 }
 
 export class FetchLinePushClient implements LinePushClient {
@@ -28,6 +33,15 @@ export class FetchLinePushClient implements LinePushClient {
   }
 
   async push(recipientId: string, retryKey: string): Promise<LinePushResult> {
+    return this.pushText(recipientId, retryKey, LINE_PUSH_TEXT);
+  }
+
+  async pushText(
+    recipientId: string,
+    retryKey: string,
+    text: string,
+  ): Promise<LinePushResult> {
+    if (!text || text.length > 2000) return 'blocked';
     const response = await this.fetcher(LINE_PUSH_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -37,7 +51,7 @@ export class FetchLinePushClient implements LinePushClient {
       },
       body: JSON.stringify({
         to: recipientId,
-        messages: [{ type: 'text', text: LINE_PUSH_TEXT }],
+        messages: [{ type: 'text', text }],
       }),
     }).catch(() => null);
     if (!response) return 'retryable';

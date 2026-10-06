@@ -28,6 +28,9 @@ import {
   createLinePushClient,
   type LinePushClient,
 } from './line-push-client.js';
+import { createLineOAuthPushTextProvider } from './line-oauth-push.js';
+import type { LineEventProcessingStore } from './line-event-processing-store.js';
+import { createSupabaseLineEventProcessingStore } from './line-event-processing-store.js';
 import {
   createSupabaseLinePushStore,
   type LinePushStore,
@@ -64,6 +67,7 @@ import {
 import { createSupabaseGoogleConnectionStore } from './google-connection-store.js';
 import { createSupabaseGoogleOAuthStateStore } from './google-oauth-state-store.js';
 import { GoogleapisOAuthTokenProvider } from './google-oauth-provider.js';
+import { createGoogleOAuthStart } from './google-oauth-start.js';
 
 import {
   createSupabaseUsageLogStore,
@@ -90,6 +94,12 @@ export type AppDependencies = {
     linePushStore?: LinePushStore;
     linePushClient?: LinePushClient;
     linePushUsageLogs?: UsageLogStore;
+    lineEventProcessingStore?: LineEventProcessingStore;
+    lineOAuthPushTextProvider?: ReturnType<
+      typeof createLineOAuthPushTextProvider
+    >;
+    lineOAuthStart?: (userId: string) => Promise<string>;
+    lineOAuthEncryptionKey?: Buffer;
     outbox?: LineOutboxStore;
     publisher?: QstashPublisher;
   };
@@ -253,14 +263,50 @@ export function createApp(
       )
         throw new Error('unknown_job_type');
       if (!executor && jobType === 'line_event_process') {
-        const pushStore =
-          dependencies.qstash?.linePushStore ?? createSupabaseLinePushStore();
-        const pushClient =
-          dependencies.qstash?.linePushClient ?? createLinePushClient();
-        executor = createLinePushExecutor(pushStore, pushClient);
+        // OAuth initiation is intentionally a two-flag, opt-in path. When it
+        // is not fully enabled, complete the claimed job without reading the
+        // event, decrypting it, constructing clients, or calling LINE.
+        if (!isGoogleOAuthEnabled() || !isLineAsyncProcessingEnabled()) {
+          executor = async () => ({ outcome: 'blocked' });
+        } else {
+          const pushStore =
+            dependencies.qstash?.linePushStore ?? createSupabaseLinePushStore();
+          const pushClient =
+            dependencies.qstash?.linePushClient ?? createLinePushClient();
+          const textProvider =
+            dependencies.qstash?.lineOAuthPushTextProvider ??
+            createLineOAuthPushTextProvider({
+              eventStore:
+                dependencies.qstash?.lineEventProcessingStore ??
+                createSupabaseLineEventProcessingStore(),
+              encryptionKey:
+                dependencies.qstash?.lineOAuthEncryptionKey ??
+                readWebhookEncryptionKey(),
+              createGoogleOAuthStart:
+                dependencies.qstash?.lineOAuthStart ??
+                (async (userId) => {
+                  const config =
+                    dependencies.oauth?.config ?? readGoogleOAuthConfig();
+                  const stateStore = createSupabaseGoogleOAuthStateStore();
+                  return createGoogleOAuthStart(userId, {
+                    config,
+                    stateStore,
+                  });
+                }),
+            });
+          executor = createLinePushExecutor(
+            pushStore,
+            pushClient,
+            textProvider,
+          );
+        }
       }
       if (!executor) throw new Error('handler_unavailable');
-      if (jobType === 'line_event_process') {
+      if (
+        jobType === 'line_event_process' &&
+        isGoogleOAuthEnabled() &&
+        isLineAsyncProcessingEnabled()
+      ) {
         pushUsage = dependencies.qstash?.linePushUsageLogs;
         if (!pushUsage) {
           try {
