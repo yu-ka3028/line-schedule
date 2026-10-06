@@ -56,6 +56,18 @@ describe('LINE OAuth push text', () => {
     });
   });
 
+  it.each([null, [], 'event', 42, true])(
+    'classifies a non-record JSON payload as invalid event: %j',
+    async (payload) => {
+      await expect(
+        createLineOAuthPushText(encrypted(payload), userId, {
+          encryptionKey: key,
+          createGoogleOAuthStart: vi.fn(),
+        }),
+      ).rejects.toMatchObject({ code: 'invalid-event' });
+    },
+  );
+
   it('classifies OAuth generation and state-store failures', async () => {
     await expect(
       createLineOAuthPushText(

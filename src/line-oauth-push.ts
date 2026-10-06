@@ -30,13 +30,19 @@ export class LineOAuthPushProcessingError extends Error {
   }
 }
 
+function isRecord(value: unknown): value is StoredEvent {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function isTargetEvent(plaintext: string): boolean {
-  let value: StoredEvent;
+  let value: unknown;
   try {
-    value = JSON.parse(plaintext) as StoredEvent;
+    value = JSON.parse(plaintext);
   } catch {
     throw new LineOAuthPushProcessingError('invalid-event');
   }
+  if (!isRecord(value)) throw new LineOAuthPushProcessingError('invalid-event');
+
   return (
     value.type === 'message' &&
     value.message?.type === 'text' &&
