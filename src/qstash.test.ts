@@ -31,13 +31,29 @@ function store(
   };
 }
 
+let originalLineAsyncProcessingEnabled: string | undefined;
+let originalGoogleOAuthEnabled: string | undefined;
+
 beforeEach(() => {
+  originalLineAsyncProcessingEnabled =
+    process.env.LINE_ASYNC_PROCESSING_ENABLED;
+  originalGoogleOAuthEnabled = process.env.GOOGLE_OAUTH_ENABLED;
   process.env.LINE_ASYNC_PROCESSING_ENABLED = 'true';
 });
 
 afterEach(() => {
-  delete process.env.LINE_ASYNC_PROCESSING_ENABLED;
-  delete process.env.GOOGLE_OAUTH_ENABLED;
+  if (originalLineAsyncProcessingEnabled === undefined) {
+    delete process.env.LINE_ASYNC_PROCESSING_ENABLED;
+  } else {
+    process.env.LINE_ASYNC_PROCESSING_ENABLED =
+      originalLineAsyncProcessingEnabled;
+  }
+
+  if (originalGoogleOAuthEnabled === undefined) {
+    delete process.env.GOOGLE_OAUTH_ENABLED;
+  } else {
+    process.env.GOOGLE_OAUTH_ENABLED = originalGoogleOAuthEnabled;
+  }
 });
 
 const request = (body = JSON.stringify({ jobId: id })) => ({
