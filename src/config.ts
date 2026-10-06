@@ -107,6 +107,42 @@ export function isLineAsyncProcessingEnabled(): boolean {
   return process.env.LINE_ASYNC_PROCESSING_ENABLED === 'true';
 }
 
+export function isGoogleOAuthEnabled(): boolean {
+  return process.env.GOOGLE_OAUTH_ENABLED === 'true';
+}
+
+export type GoogleOAuthConfig = {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+};
+
+export function readGoogleOAuthConfig(): GoogleOAuthConfig {
+  const redirectUri = requiredEnvironment('GOOGLE_REDIRECT_URI');
+  try {
+    const parsed = new URL(redirectUri);
+    const local =
+      parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+    if (
+      (parsed.protocol !== 'https:' &&
+        !(local && parsed.protocol === 'http:')) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash ||
+      parsed.pathname !== '/oauth/google/callback'
+    )
+      throw new Error();
+  } catch {
+    throw new ConfigurationError('GOOGLE_REDIRECT_URI must be a valid URL');
+  }
+  return {
+    clientId: requiredEnvironment('GOOGLE_CLIENT_ID'),
+    clientSecret: requiredEnvironment('GOOGLE_CLIENT_SECRET'),
+    redirectUri,
+  };
+}
+
 export function readQstashConfig(): QstashConfig {
   return {
     currentSigningKey: requiredEnvironment('QSTASH_CURRENT_SIGNING_KEY'),
