@@ -23,6 +23,7 @@ import {
   createLinePushExecutor,
   LinePushRetryableError,
   type LinePushExecutorResult,
+  type LineOAuthPushExecutorDependencies,
 } from './line-push-executor.js';
 import {
   createLinePushClient,
@@ -40,6 +41,7 @@ import {
   createSupabaseLineEventStore,
   type LineEventStore,
 } from './line-event-store.js';
+import { createSupabaseLineEventProcessingStore } from './line-event-processing-store.js';
 import {
   dispatchLineEventPublish,
   dispatchLineEventPublishBatch,
@@ -64,6 +66,7 @@ import {
 import { createSupabaseGoogleConnectionStore } from './google-connection-store.js';
 import { createSupabaseGoogleOAuthStateStore } from './google-oauth-state-store.js';
 import { GoogleapisOAuthTokenProvider } from './google-oauth-provider.js';
+import { createGoogleOAuthStart } from './google-oauth-start.js';
 
 import {
   createSupabaseUsageLogStore,
@@ -90,6 +93,7 @@ export type AppDependencies = {
     linePushStore?: LinePushStore;
     linePushClient?: LinePushClient;
     linePushUsageLogs?: UsageLogStore;
+    lineOAuthPush?: LineOAuthPushExecutorDependencies;
     outbox?: LineOutboxStore;
     publisher?: QstashPublisher;
   };
@@ -257,7 +261,30 @@ export function createApp(
           dependencies.qstash?.linePushStore ?? createSupabaseLinePushStore();
         const pushClient =
           dependencies.qstash?.linePushClient ?? createLinePushClient();
-        executor = createLinePushExecutor(pushStore, pushClient);
+        let oauth: LineOAuthPushExecutorDependencies | undefined;
+        // Construct the processing/OAuth dependencies only when both opt-ins
+        // are enabled. This keeps the disabled path free of reads, decryption,
+        // state writes, Google clients, and dynamic LINE messages.
+        if (isLineAsyncProcessingEnabled() && isGoogleOAuthEnabled()) {
+          if (dependencies.qstash?.lineOAuthPush) {
+            oauth = dependencies.qstash.lineOAuthPush;
+          } else {
+            const oauthConfig =
+              dependencies.oauth?.config ?? readGoogleOAuthConfig();
+            const stateStore = createSupabaseGoogleOAuthStateStore();
+            const encryptionKey = readWebhookEncryptionKey();
+            oauth = {
+              processingStore: createSupabaseLineEventProcessingStore(),
+              encryptionKey,
+              createGoogleOAuthStart: (userId: string) =>
+                createGoogleOAuthStart(userId, {
+                  config: oauthConfig,
+                  stateStore,
+                }),
+            };
+          }
+        }
+        executor = createLinePushExecutor(pushStore, pushClient, oauth);
       }
       if (!executor) throw new Error('handler_unavailable');
       if (jobType === 'line_event_process') {
