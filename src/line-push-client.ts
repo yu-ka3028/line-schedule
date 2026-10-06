@@ -3,6 +3,7 @@ import { ConfigurationError } from './config.js';
 export const LINE_PUSH_ENDPOINT = 'https://api.line.me/v2/bot/message/push';
 export const LINE_PUSH_TEXT =
   '受け付けました。現在、予定処理機能を準備中です。';
+export const LINE_PUSH_MAX_TEXT_LENGTH = 2000;
 
 export type LinePushResult = 'sent' | 'retryable' | 'blocked';
 export type FetchLike = (
@@ -12,6 +13,11 @@ export type FetchLike = (
 
 export interface LinePushClient {
   push(recipientId: string, retryKey: string): Promise<LinePushResult>;
+  pushText?(
+    recipientId: string,
+    retryKey: string,
+    text: string,
+  ): Promise<LinePushResult>;
 }
 
 export class FetchLinePushClient implements LinePushClient {
@@ -28,6 +34,15 @@ export class FetchLinePushClient implements LinePushClient {
   }
 
   async push(recipientId: string, retryKey: string): Promise<LinePushResult> {
+    return this.pushText(recipientId, retryKey, LINE_PUSH_TEXT);
+  }
+
+  async pushText(
+    recipientId: string,
+    retryKey: string,
+    text: string,
+  ): Promise<LinePushResult> {
+    if (!text || text.length > LINE_PUSH_MAX_TEXT_LENGTH) return 'blocked';
     const response = await this.fetcher(LINE_PUSH_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -37,7 +52,7 @@ export class FetchLinePushClient implements LinePushClient {
       },
       body: JSON.stringify({
         to: recipientId,
-        messages: [{ type: 'text', text: LINE_PUSH_TEXT }],
+        messages: [{ type: 'text', text }],
       }),
     }).catch(() => null);
     if (!response) return 'retryable';

@@ -4,6 +4,7 @@ import {
   FetchLinePushClient,
   LINE_PUSH_ENDPOINT,
   LINE_PUSH_TEXT,
+  LINE_PUSH_MAX_TEXT_LENGTH,
 } from './line-push-client.js';
 
 describe('FetchLinePushClient', () => {
@@ -31,6 +32,27 @@ describe('FetchLinePushClient', () => {
     expect(JSON.stringify(fetcher.mock.calls)).not.toContain(
       'sensitive response body',
     );
+  });
+
+  it('sends a dynamic body and blocks an oversized body', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const client = new FetchLinePushClient('test-token', fetcher);
+    await expect(
+      client.pushText!('Urecipient', 'retry-key', 'dynamic'),
+    ).resolves.toBe('sent');
+    expect(
+      JSON.parse(fetcher.mock.calls[0][1].body as string).messages[0].text,
+    ).toBe('dynamic');
+    await expect(
+      client.pushText!(
+        'Urecipient',
+        'retry-key',
+        'x'.repeat(LINE_PUSH_MAX_TEXT_LENGTH + 1),
+      ),
+    ).resolves.toBe('blocked');
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it.each([
