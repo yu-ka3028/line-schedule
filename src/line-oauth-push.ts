@@ -1,80 +1,83 @@
 import { decryptWebhookPayload } from './crypto.js';
-import type { LineEventProcessingStore } from './line-event-processing-store.js';
-import type { ProcessingJob } from './processing-jobs.js';
 
-const MAX_PUSH_TEXT_LENGTH = 2000;
+export const MAX_PUSH_TEXT_LENGTH = 2000;
 const PUSH_PREFIX = 'Google連携はこちら:\n';
+const TARGET_TEXT = 'Google連携';
 
 type GoogleOAuthStart = (userId: string) => Promise<string>;
 
 type StoredEvent = {
   type?: unknown;
-  source?: { type?: unknown; userId?: unknown };
   message?: { type?: unknown; text?: unknown };
 };
 
 export type LineOAuthPushTextDependencies = {
-  eventStore: LineEventProcessingStore;
   encryptionKey: Buffer;
   createGoogleOAuthStart: GoogleOAuthStart;
 };
 
+export type LineOAuthPushProcessingErrorCode =
+  | 'decrypt-failure'
+  | 'invalid-event'
+  | 'state-store-failure'
+  | 'oauth-start-failure'
+  | 'message-too-long';
+
 export class LineOAuthPushProcessingError extends Error {
-  constructor() {
+  constructor(public readonly code: LineOAuthPushProcessingErrorCode) {
     super('line_oauth_push_processing_failed');
     this.name = 'LineOAuthPushProcessingError';
   }
 }
 
-function parseTargetEvent(plaintext: string): boolean {
+function isTargetEvent(plaintext: string): boolean {
+  let value: StoredEvent;
   try {
-    const value = JSON.parse(plaintext) as StoredEvent;
-    return (
-      value.type === 'message' &&
-      value.source?.type === 'user' &&
-      typeof value.source.userId === 'string' &&
-      value.source.userId.length > 0 &&
-      value.message?.type === 'text' &&
-      value.message.text === 'Google連携'
+    value = JSON.parse(plaintext) as StoredEvent;
+  } catch {
+    throw new LineOAuthPushProcessingError('invalid-event');
+  }
+  return (
+    value.type === 'message' &&
+    value.message?.type === 'text' &&
+    value.message.text === TARGET_TEXT
+  );
+}
+
+/** Returns a dynamic push body for the exact OAuth command, or null for other events. */
+export async function createLineOAuthPushText(
+  payloadCiphertext: string,
+  userId: string,
+  dependencies: LineOAuthPushTextDependencies,
+): Promise<string | null> {
+  let plaintext: string;
+  try {
+    plaintext = decryptWebhookPayload(
+      payloadCiphertext,
+      dependencies.encryptionKey,
     );
   } catch {
-    throw new LineOAuthPushProcessingError();
+    throw new LineOAuthPushProcessingError('decrypt-failure');
   }
+
+  if (!isTargetEvent(plaintext)) return null;
+
+  let url: string;
+  try {
+    url = await dependencies.createGoogleOAuthStart(userId);
+  } catch (error) {
+    const code =
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'state-store-failure'
+        ? 'state-store-failure'
+        : 'oauth-start-failure';
+    throw new LineOAuthPushProcessingError(code);
+  }
+
+  const text = `${PUSH_PREFIX}${url}`;
+  if (text.length > MAX_PUSH_TEXT_LENGTH)
+    throw new LineOAuthPushProcessingError('message-too-long');
+  return text;
 }
-
-export function createLineOAuthPushTextProvider(
-  dependencies: LineOAuthPushTextDependencies,
-) {
-  return async (job: ProcessingJob, processingToken: string) => {
-    const record = await dependencies.eventStore.read(
-      job.jobId,
-      processingToken,
-    );
-    if (!record) throw new LineOAuthPushProcessingError();
-
-    let plaintext: string;
-    try {
-      plaintext = decryptWebhookPayload(
-        record.payloadCiphertext,
-        dependencies.encryptionKey,
-      );
-    } catch {
-      throw new LineOAuthPushProcessingError();
-    }
-    if (!parseTargetEvent(plaintext)) return null;
-
-    let url: string;
-    try {
-      url = await dependencies.createGoogleOAuthStart(record.userId);
-    } catch {
-      throw new LineOAuthPushProcessingError();
-    }
-    const text = `${PUSH_PREFIX}${url}`;
-    if (text.length > MAX_PUSH_TEXT_LENGTH) {
-      throw new LineOAuthPushProcessingError();
-    }
-    return text;
-  };
-}
-
-export { MAX_PUSH_TEXT_LENGTH };

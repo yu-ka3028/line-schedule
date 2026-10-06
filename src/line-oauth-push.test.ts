@@ -2,81 +2,111 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { encryptWebhookPayload } from './crypto.js';
 import {
-  createLineOAuthPushTextProvider,
+  createLineOAuthPushText,
   MAX_PUSH_TEXT_LENGTH,
 } from './line-oauth-push.js';
 
 const key = Buffer.alloc(32, 7);
-const job = { jobId: '00000000-0000-4000-8000-000000000001' };
+const userId = 'internal-user';
 
-function provider(
-  payload: unknown,
-  start = vi.fn().mockResolvedValue('https://example.test/oauth'),
-) {
-  return {
-    text: createLineOAuthPushTextProvider({
-      eventStore: {
-        read: vi.fn().mockResolvedValue({
-          userId: '00000000-0000-4000-8000-000000000002',
-          payloadCiphertext: encryptWebhookPayload(
-            JSON.stringify(payload),
-            key,
-          ),
-        }),
-      },
-      encryptionKey: key,
-      createGoogleOAuthStart: start,
-    }),
-    start,
-  };
+function encrypted(payload: unknown, encryptionKey = key) {
+  return encryptWebhookPayload(JSON.stringify(payload), encryptionKey);
 }
 
 describe('LINE OAuth push text', () => {
-  it('only targets the exact user text and returns a bounded dynamic message', async () => {
+  it('starts OAuth only for the exact command and returns a bounded body', async () => {
     const start = vi.fn().mockResolvedValue('https://example.test/oauth');
-    const value = provider(
-      {
+    const text = await createLineOAuthPushText(
+      encrypted({
         type: 'message',
-        source: { type: 'user', userId: 'U1' },
         message: { type: 'text', text: 'Google連携' },
-      },
-      start,
+      }),
+      userId,
+      { encryptionKey: key, createGoogleOAuthStart: start },
     );
-    const text = await value.text(job, 'token');
-    expect(text).not.toBeNull();
-    if (text === null) throw new Error('expected push text');
     expect(text).toBe('Google連携はこちら:\nhttps://example.test/oauth');
-    expect(text.length).toBeLessThanOrEqual(MAX_PUSH_TEXT_LENGTH);
-    expect(start).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000002');
+    expect(text?.length).toBeLessThanOrEqual(MAX_PUSH_TEXT_LENGTH);
+    expect(start).toHaveBeenCalledWith(userId);
   });
 
   it.each([
-    {
-      type: 'message',
-      source: { type: 'user', userId: 'U1' },
-      message: { type: 'text', text: 'google連携' },
-    },
-    {
-      type: 'message',
-      source: { type: 'user', userId: 'U1' },
-      message: { type: 'image' },
-    },
-    { type: 'follow', source: { type: 'user', userId: 'U1' } },
-  ])('does not start OAuth for non-target events', async (payload) => {
-    const value = provider(payload);
-    await expect(value.text(job, 'token')).resolves.toBeNull();
-    expect(value.start).not.toHaveBeenCalled();
+    { type: 'message', message: { type: 'text', text: 'google連携' } },
+    { type: 'message', message: { type: 'image' } },
+    { type: 'follow' },
+  ])('returns unhandled for a non-target event', async (payload) => {
+    const start = vi.fn();
+    await expect(
+      createLineOAuthPushText(encrypted(payload), userId, {
+        encryptionKey: key,
+        createGoogleOAuthStart: start,
+      }),
+    ).resolves.toBeNull();
+    expect(start).not.toHaveBeenCalled();
   });
 
-  it('does not expose decryption or state errors', async () => {
-    const eventStore = { read: vi.fn().mockResolvedValue(null) };
-    const text = createLineOAuthPushTextProvider({
-      eventStore,
-      encryptionKey: key,
-      createGoogleOAuthStart: vi.fn(),
+  it('classifies decryption failure without returning a URL', async () => {
+    await expect(
+      createLineOAuthPushText('invalid-ciphertext', userId, {
+        encryptionKey: key,
+        createGoogleOAuthStart: vi.fn(),
+      }),
+    ).rejects.toMatchObject({
+      name: 'LineOAuthPushProcessingError',
+      code: 'decrypt-failure',
     });
-    await expect(text(job, 'token')).rejects.toThrow(
-      'line_oauth_push_processing_failed',
-    );
+  });
+
+  it('classifies OAuth generation and state-store failures', async () => {
+    await expect(
+      createLineOAuthPushText(
+        encrypted({
+          type: 'message',
+          message: { type: 'text', text: 'Google連携' },
+        }),
+        userId,
+        {
+          encryptionKey: key,
+          createGoogleOAuthStart: vi.fn().mockRejectedValue({
+            code: 'state-store-failure',
+          }),
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'state-store-failure' });
+
+    await expect(
+      createLineOAuthPushText(
+        encrypted({
+          type: 'message',
+          message: { type: 'text', text: 'Google連携' },
+        }),
+        userId,
+        {
+          encryptionKey: key,
+          createGoogleOAuthStart: vi
+            .fn()
+            .mockRejectedValue(new Error('failed')),
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'oauth-start-failure' });
+  });
+
+  it('classifies a body over the LINE limit', async () => {
+    await expect(
+      createLineOAuthPushText(
+        encrypted({
+          type: 'message',
+          message: { type: 'text', text: 'Google連携' },
+        }),
+        userId,
+        {
+          encryptionKey: key,
+          createGoogleOAuthStart: vi
+            .fn()
+            .mockResolvedValue(
+              `https://example.test/${'x'.repeat(MAX_PUSH_TEXT_LENGTH)}`,
+            ),
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'message-too-long' });
   });
 });

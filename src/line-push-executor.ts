@@ -14,15 +14,10 @@ export class LinePushRetryableError extends Error {
 }
 
 export type LinePushExecutorResult = { outcome: LinePushExecutionOutcome };
-export type LinePushTextProvider = (
-  job: Parameters<JobExecutor>[0],
-  processingToken: string,
-) => Promise<string | null>;
 
 export function createLinePushExecutor(
   store: LinePushStore,
   client: LinePushClient,
-  textProvider?: LinePushTextProvider,
 ): JobExecutor {
   return async (job, processingToken) => {
     const delivery = await store.claim(job.jobId, processingToken);
@@ -34,44 +29,7 @@ export function createLinePushExecutor(
       if (delivery.outcome === 'blocked') return { outcome: 'blocked' };
       return { outcome: 'terminal' };
     }
-    let text: string | null = null;
-    if (textProvider) {
-      try {
-        text = await textProvider(job, processingToken);
-      } catch {
-        const status = await store.fail(
-          job.jobId,
-          processingToken,
-          delivery.retryKey,
-          'retryable',
-        );
-        if (status === 'token_mismatch' || status === 'not_found')
-          throw new Error('line_push_completion_failed');
-        throw new LinePushRetryableError();
-      }
-    }
-    if (text === null && textProvider) {
-      const status = await store.fail(
-        job.jobId,
-        processingToken,
-        delivery.retryKey,
-        'blocked',
-      );
-      if (status === 'token_mismatch' || status === 'not_found')
-        throw new Error('line_push_completion_failed');
-      return { outcome: 'blocked' };
-    }
-    let result: Awaited<ReturnType<LinePushClient['push']>>;
-    if (text !== null && textProvider) {
-      if (!client.pushText) throw new LinePushRetryableError();
-      result = await client.pushText(
-        delivery.recipientId,
-        delivery.retryKey,
-        text,
-      );
-    } else {
-      result = await client.push(delivery.recipientId, delivery.retryKey);
-    }
+    const result = await client.push(delivery.recipientId, delivery.retryKey);
     if (result === 'sent') {
       const completed = await store.sent(
         job.jobId,
