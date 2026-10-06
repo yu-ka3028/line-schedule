@@ -2,8 +2,12 @@ import { Hono } from 'hono';
 
 import {
   ConfigurationError,
+  isGoogleOAuthEnabled,
   isLineAsyncProcessingEnabled,
+  readGoogleOAuthConfig,
   readQstashConfig,
+  readWebhookEncryptionKey,
+  type GoogleOAuthConfig,
   type QstashConfig,
 } from './config.js';
 import {
@@ -52,6 +56,14 @@ import {
   parseLineWebhookPayload,
 } from './line-events.js';
 import { readBodyWithLimit, verifyLineSignature } from './line-signature.js';
+import {
+  GoogleOAuthCallbackError,
+  handleGoogleOAuthCallback,
+  type GoogleOAuthCallbackDependencies,
+} from './google-oauth-callback.js';
+import { createSupabaseGoogleConnectionStore } from './google-connection-store.js';
+import { createSupabaseGoogleOAuthStateStore } from './google-oauth-state-store.js';
+import { GoogleapisOAuthTokenProvider } from './google-oauth-provider.js';
 
 import {
   createSupabaseUsageLogStore,
@@ -65,6 +77,10 @@ export type AppDependencies = {
     usageLogs?: UsageLogStore;
     outbox?: LineOutboxStore;
     publisher?: QstashPublisher;
+  };
+  oauth?: {
+    callback?: GoogleOAuthCallbackDependencies;
+    config?: GoogleOAuthConfig;
   };
   qstash?: {
     config?: QstashConfig;
@@ -318,6 +334,39 @@ export function createApp(
       } catch {
         return c.json({ error: 'job_store_unavailable' }, 500);
       }
+    }
+  });
+
+  app.get('/oauth/google/callback', async (c) => {
+    // Keep the route inert until explicitly enabled: no config, clients, state
+    // consumption, or database access is allowed on the disabled path.
+    if (!isGoogleOAuthEnabled()) return c.json({ error: 'not_found' }, 404);
+
+    if (c.req.query('error') !== undefined)
+      return c.json({ error: 'oauth_denied' }, 400);
+    const code = c.req.query('code');
+    const state = c.req.query('state');
+    if (!code || !state) return c.json({ error: 'invalid_oauth_request' }, 400);
+
+    try {
+      let callback = dependencies.oauth?.callback;
+      if (!callback) {
+        const config = dependencies.oauth?.config ?? readGoogleOAuthConfig();
+        callback = {
+          stateStore: createSupabaseGoogleOAuthStateStore(),
+          codeExchanger: new GoogleapisOAuthTokenProvider(config),
+          connectionStore: createSupabaseGoogleConnectionStore(),
+          encryptionKey: readWebhookEncryptionKey(),
+        };
+      }
+      await handleGoogleOAuthCallback({ code, state }, callback);
+      return c.text('Google OAuth connection successful.', 200);
+    } catch (error) {
+      if (error instanceof GoogleOAuthCallbackError)
+        return c.json({ error: 'invalid_oauth_callback' }, 400);
+      if (error instanceof ConfigurationError)
+        return c.json({ error: 'configuration_unavailable' }, 503);
+      return c.json({ error: 'oauth_callback_unavailable' }, 500);
     }
   });
 

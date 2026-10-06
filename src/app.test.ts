@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
+import type { GoogleOAuthCallbackDependencies } from './google-oauth-callback.js';
 import type { LineEventStore } from './line-event-store.js';
 
 const dummySecret = 'test-only-line-channel-secret';
@@ -39,9 +40,92 @@ const validBody = JSON.stringify({
 afterEach(() => {
   delete process.env.LINE_CHANNEL_SECRET;
   delete process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  delete process.env.GOOGLE_OAUTH_ENABLED;
+  delete process.env.GOOGLE_CLIENT_ID;
+  delete process.env.GOOGLE_CLIENT_SECRET;
+  delete process.env.GOOGLE_REDIRECT_URI;
 });
 
 describe('app', () => {
+  it('keeps the Google OAuth callback inert when disabled', async () => {
+    const callback: GoogleOAuthCallbackDependencies = {
+      stateStore: { consume: vi.fn() } as never,
+      codeExchanger: { exchangeCode: vi.fn() },
+      connectionStore: { upsert: vi.fn() },
+      encryptionKey: Buffer.alloc(32),
+    };
+    const response = await createApp(undefined, {
+      oauth: { callback },
+    }).request('/oauth/google/callback?code=secret-code&state=secret-state');
+    expect(response.status).toBe(404);
+    expect(callback.stateStore.consume).not.toHaveBeenCalled();
+    expect(callback.codeExchanger.exchangeCode).not.toHaveBeenCalled();
+    expect(callback.connectionStore.upsert).not.toHaveBeenCalled();
+    expect(await response.text()).not.toContain('secret');
+  });
+
+  it('rejects incomplete and provider-error callbacks safely', async () => {
+    process.env.GOOGLE_OAUTH_ENABLED = 'true';
+    const exchangeCode = vi
+      .fn()
+      .mockRejectedValue(new Error('provider detail'));
+    const callback: GoogleOAuthCallbackDependencies = {
+      stateStore: {
+        consume: vi.fn().mockResolvedValue({ userId: 'user' }),
+      } as never,
+      codeExchanger: { exchangeCode },
+      connectionStore: { upsert: vi.fn() },
+      encryptionKey: Buffer.alloc(32),
+    };
+    const app = createApp(undefined, { oauth: { callback } });
+
+    expect(
+      (await app.request('/oauth/google/callback?state=state')).status,
+    ).toBe(400);
+    const response = await app.request(
+      '/oauth/google/callback?code=secret-code&state=secret-state',
+    );
+    expect(response.status).toBe(400);
+    expect(await response.text()).not.toContain('secret');
+    expect(exchangeCode).toHaveBeenCalledOnce();
+  });
+
+  it('returns a fixed success response and classifies store failures', async () => {
+    process.env.GOOGLE_OAUTH_ENABLED = 'true';
+    const callback: GoogleOAuthCallbackDependencies = {
+      stateStore: {
+        consume: vi.fn().mockResolvedValue({ userId: 'user' }),
+      } as never,
+      codeExchanger: {
+        exchangeCode: vi.fn().mockResolvedValue({
+          googleAccountId: 'account',
+          accessToken: 'access',
+          tokenExpiresAt: new Date(Date.now() + 60_000),
+          scopes: ['https://www.googleapis.com/auth/calendar.events'],
+        }),
+      },
+      connectionStore: { upsert: vi.fn().mockResolvedValue(undefined) },
+      encryptionKey: Buffer.alloc(32),
+    };
+    const app = createApp(undefined, { oauth: { callback } });
+    const response = await app.request(
+      '/oauth/google/callback?code=secret-code&state=secret-state',
+    );
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toBe('Google OAuth connection successful.');
+    expect(body).not.toContain('secret');
+
+    callback.connectionStore.upsert = vi
+      .fn()
+      .mockRejectedValue(new Error('migration unavailable'));
+    const failed = await app.request(
+      '/oauth/google/callback?code=code&state=state',
+    );
+    expect(failed.status).toBe(500);
+    expect(await failed.text()).not.toContain('migration');
+  });
+
   it('returns a healthy status', async () => {
     const response = await createApp().request('/healthz');
     expect(response.status).toBe(200);
