@@ -147,6 +147,35 @@ describe('GoogleapisCalendarClient', () => {
     await expect(Promise.all([first, second])).resolves.toHaveLength(2);
   });
 
+  it('does not retain the raw API error on a conflict', async () => {
+    const apiError = {
+      response: {
+        status: 409,
+        config: { headers: { Authorization: 'Bearer secret' } },
+        data: { access_token: 'token-secret' },
+      },
+      request: { body: 'request-secret' },
+    };
+    const insert = vi.fn().mockRejectedValue(apiError);
+    const client = new GoogleapisCalendarClient({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      calendarFactory: () => ({ events: { insert } }) as never,
+    });
+
+    const error = await client
+      .createEvent(connection, input, 'same-key')
+      .catch((value: unknown) => value as GoogleCalendarEventConflictError);
+
+    expect(error).toBeInstanceOf(GoogleCalendarEventConflictError);
+    expect(error.eventId).toBe(
+      googleCalendarEventIdFromOperationKey('same-key'),
+    );
+    expect(error).not.toHaveProperty('cause');
+    expect(JSON.stringify(error)).not.toContain('secret');
+    expect(JSON.stringify(error)).not.toContain('request-secret');
+  });
+
   it('classifies an API conflict with the deterministic event ID', async () => {
     const insert = vi.fn().mockRejectedValue({ response: { status: 409 } });
     const client = new GoogleapisCalendarClient({
