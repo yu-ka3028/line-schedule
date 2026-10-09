@@ -132,6 +132,85 @@ describe('LINE push executor opt-in outcomes', () => {
     );
   });
 
+  it('executes a valid calendar command with the job ID and pushes success text', async () => {
+    const pushText = vi.fn().mockResolvedValue('sent' as const);
+    const execute = vi
+      .fn()
+      .mockResolvedValue({ eventId: 'event', linkId: 'link' });
+    const processingStore = oauthDependencies(
+      JSON.stringify({
+        type: 'message',
+        message: {
+          type: 'text',
+          text: '予定登録\nタイトル: 会議\n開始: 2026-01-01T10:00:00+09:00\n終了: 2026-01-01T11:00:00+09:00\nタイムゾーン: Asia/Tokyo',
+        },
+      }),
+    );
+    const store = {
+      claim: vi.fn().mockResolvedValue({
+        outcome: 'claimed' as const,
+        recipientId: 'line-user',
+        retryKey: '00000000-0000-4000-8000-000000000004',
+      }),
+      sent: vi.fn().mockResolvedValue('sent' as const),
+      fail: vi.fn(),
+    };
+
+    await expect(
+      createLinePushExecutor(
+        store,
+        { push: vi.fn(), pushText },
+        {
+          ...processingStore,
+          calendarCreate: { execute } as never,
+        },
+      )(job, token),
+    ).resolves.toEqual({ outcome: 'sent' });
+    expect(execute).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000003',
+      expect.objectContaining({ type: 'calendar_create', title: '会議' }),
+      job.jobId,
+      expect.any(Object),
+    );
+    expect(pushText).toHaveBeenCalledWith(
+      'line-user',
+      '00000000-0000-4000-8000-000000000004',
+      '予定を登録しました。',
+    );
+  });
+
+  it('does not treat invalid calendar input as a successful registration', async () => {
+    const pushText = vi.fn().mockResolvedValue('sent' as const);
+    const execute = vi.fn();
+    const processingStore = oauthDependencies(
+      JSON.stringify({
+        type: 'message',
+        message: { type: 'text', text: '予定登録\n壊れた入力' },
+      }),
+    );
+    const store = {
+      claim: vi.fn().mockResolvedValue({
+        outcome: 'claimed' as const,
+        recipientId: 'line-user',
+        retryKey: '00000000-0000-4000-8000-000000000004',
+      }),
+      sent: vi.fn().mockResolvedValue('sent' as const),
+      fail: vi.fn(),
+    };
+
+    await createLinePushExecutor(
+      store,
+      { push: vi.fn(), pushText },
+      { ...processingStore, calendarCreate: { execute } as never },
+    )(job, token);
+    expect(execute).not.toHaveBeenCalled();
+    expect(pushText).toHaveBeenCalledWith(
+      'line-user',
+      '00000000-0000-4000-8000-000000000004',
+      expect.any(String),
+    );
+  });
+
   it('keeps an already terminal delivery from calling LINE', async () => {
     const push = vi.fn();
     const store = {

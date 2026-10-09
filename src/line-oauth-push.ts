@@ -50,22 +50,11 @@ function isTargetEvent(plaintext: string): boolean {
   );
 }
 
-/** Returns a dynamic push body for the exact OAuth command, or null for other events. */
-export async function createLineOAuthPushText(
-  payloadCiphertext: string,
+async function createLineOAuthPushTextFromPlaintext(
+  plaintext: string,
   userId: string,
-  dependencies: LineOAuthPushTextDependencies,
+  dependencies: Omit<LineOAuthPushTextDependencies, 'encryptionKey'>,
 ): Promise<string | null> {
-  let plaintext: string;
-  try {
-    plaintext = decryptWebhookPayload(
-      payloadCiphertext,
-      dependencies.encryptionKey,
-    );
-  } catch {
-    throw new LineOAuthPushProcessingError('decrypt-failure');
-  }
-
   if (!isTargetEvent(plaintext)) return null;
 
   let url: string;
@@ -86,4 +75,30 @@ export async function createLineOAuthPushText(
   if (text.length > MAX_PUSH_TEXT_LENGTH)
     throw new LineOAuthPushProcessingError('message-too-long');
   return text;
+}
+
+/** Returns a dynamic push body for the exact OAuth command, or null for other events. */
+export async function createLineOAuthPushText(
+  payloadCiphertext: string,
+  userId: string,
+  dependencies: LineOAuthPushTextDependencies,
+): Promise<string | null> {
+  let plaintext: string;
+  try {
+    plaintext = decryptWebhookPayload(
+      payloadCiphertext,
+      dependencies.encryptionKey,
+    );
+  } catch {
+    throw new LineOAuthPushProcessingError('decrypt-failure');
+  }
+  return createLineOAuthPushTextFromPlaintext(plaintext, userId, dependencies);
+}
+
+export async function createLineOAuthPushTextFromPlaintextPayload(
+  plaintext: string,
+  userId: string,
+  dependencies: Omit<LineOAuthPushTextDependencies, 'encryptionKey'>,
+): Promise<string | null> {
+  return createLineOAuthPushTextFromPlaintext(plaintext, userId, dependencies);
 }
