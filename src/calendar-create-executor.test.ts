@@ -68,13 +68,25 @@ function dependencies(
 }
 
 describe('executeCalendarCreate', () => {
-  it('reuses an existing link without calling Google', async () => {
+  it('reuses an active link without calling Google', async () => {
     const deps = dependencies();
     deps.scheduleLinkStore.getByBotEventId.mockResolvedValue(link());
 
     await expect(
       executeCalendarCreate(userId, command, operationKey, deps),
     ).resolves.toEqual({ eventId: 'event-id', linkId: 'link-id' });
+    expect(deps.googleCalendarClient.createEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse a deleted link', async () => {
+    const deps = dependencies();
+    deps.scheduleLinkStore.getByBotEventId.mockResolvedValue(
+      link({ status: 'deleted' }),
+    );
+
+    await expect(
+      executeCalendarCreate(userId, command, operationKey, deps),
+    ).rejects.toMatchObject({ code: 'schedule_link_deleted' });
     expect(deps.googleCalendarClient.createEvent).not.toHaveBeenCalled();
   });
 
@@ -113,7 +125,7 @@ describe('executeCalendarCreate', () => {
     ).resolves.toEqual({ eventId: 'event-id', linkId: 'winner' });
   });
 
-  it('classifies a link conflict without a visible winner as retryable', async () => {
+  it('classifies a link conflict without a visible winner as reconciliation required', async () => {
     const deps = dependencies();
     deps.scheduleLinkStore.create.mockRejectedValue(
       new ScheduleLinkCreateConflictError(null),
@@ -121,7 +133,18 @@ describe('executeCalendarCreate', () => {
 
     await expect(
       executeCalendarCreate(userId, command, operationKey, deps),
-    ).rejects.toMatchObject({ code: 'retryable' });
+    ).rejects.toMatchObject({ code: 'reconciliation_required' });
+  });
+
+  it('classifies link persistence failure after Google success as reconciliation required', async () => {
+    const deps = dependencies();
+    deps.scheduleLinkStore.create.mockRejectedValue(
+      new Error('database failure'),
+    );
+
+    await expect(
+      executeCalendarCreate(userId, command, operationKey, deps),
+    ).rejects.toMatchObject({ code: 'reconciliation_required' });
   });
 
   it('does not expose secrets for connection or API failures', async () => {
@@ -172,6 +195,15 @@ describe('executeCalendarCreate', () => {
     await expect(
       executeCalendarCreate('not-a-uuid', command, operationKey, deps),
     ).rejects.toMatchObject({ code: 'invalid_input' });
+    for (const malformedKey of [
+      'contains space',
+      'contains\u0000control',
+      '日本語',
+    ]) {
+      await expect(
+        executeCalendarCreate(userId, command, malformedKey, deps),
+      ).rejects.toMatchObject({ code: 'invalid_input' });
+    }
     await expect(
       executeCalendarCreate(userId, command, 'x'.repeat(257), deps),
     ).rejects.toMatchObject({ code: 'invalid_input' });

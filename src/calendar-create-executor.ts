@@ -20,13 +20,15 @@ import {
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_OPERATION_KEY_LENGTH = 256;
+const SAFE_OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$/;
 
 type ExecutorErrorCode =
   | 'invalid_input'
   | 'connection_unavailable'
   | 'google_api_failure'
   | 'retryable'
-  | 'reconciliation_required';
+  | 'reconciliation_required'
+  | 'schedule_link_deleted';
 
 export class CalendarCreateExecutorError extends Error {
   constructor(readonly code: ExecutorErrorCode) {
@@ -53,13 +55,19 @@ function assertInputs(userId: string, operationKey: string): void {
   if (
     typeof operationKey !== 'string' ||
     operationKey.length === 0 ||
-    operationKey.length > MAX_OPERATION_KEY_LENGTH
+    operationKey.length > MAX_OPERATION_KEY_LENGTH ||
+    !SAFE_OPERATION_KEY.test(operationKey)
   )
     throw new CalendarCreateExecutorError('invalid_input');
 }
 
 function reused(link: ScheduleLink): CalendarCreateExecutorResult {
   return { eventId: link.googleEventId, linkId: link.id };
+}
+
+function assertActiveLink(link: ScheduleLink): void {
+  if (link.status === 'deleted')
+    throw new CalendarCreateExecutorError('schedule_link_deleted');
 }
 
 /**
@@ -91,7 +99,10 @@ export async function executeCalendarCreate(
   } catch {
     throw new CalendarCreateExecutorError('retryable');
   }
-  if (existingLink) return reused(existingLink);
+  if (existingLink) {
+    assertActiveLink(existingLink);
+    return reused(existingLink);
+  }
 
   let connection;
   try {
@@ -124,8 +135,12 @@ export async function executeCalendarCreate(
           userId,
           operationKey,
         );
-        if (link) return reused(link);
-      } catch {
+        if (link) {
+          assertActiveLink(link);
+          return reused(link);
+        }
+      } catch (error) {
+        if (error instanceof CalendarCreateExecutorError) throw error;
         // A later retry may observe the competing link.
       }
       throw new CalendarCreateExecutorError('reconciliation_required');
@@ -143,10 +158,13 @@ export async function executeCalendarCreate(
     return { eventId: googleEvent.eventId, linkId: link.id };
   } catch (error) {
     if (error instanceof ScheduleLinkCreateConflictError) {
-      if (error.existingLink) return reused(error.existingLink);
-      throw new CalendarCreateExecutorError('retryable');
+      if (error.existingLink) {
+        assertActiveLink(error.existingLink);
+        return reused(error.existingLink);
+      }
+      throw new CalendarCreateExecutorError('reconciliation_required');
     }
-    throw new CalendarCreateExecutorError('retryable');
+    throw new CalendarCreateExecutorError('reconciliation_required');
   }
 }
 

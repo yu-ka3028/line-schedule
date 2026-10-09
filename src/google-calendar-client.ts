@@ -10,11 +10,8 @@ export type GoogleCalendarEvent = {
 };
 
 export class GoogleCalendarEventConflictError extends Error {
-  constructor(
-    readonly eventId: string,
-    readonly cause?: unknown,
-  ) {
-    super('Google Calendar event already exists', { cause });
+  constructor(readonly eventId: string) {
+    super('Google Calendar event already exists');
     this.name = 'GoogleCalendarEventConflictError';
   }
 }
@@ -100,7 +97,7 @@ export class GoogleapisCalendarClient implements GoogleCalendarClient {
       }));
     } catch (error) {
       if (isGoogleCalendarConflictError(error))
-        throw new GoogleCalendarEventConflictError(eventId, error);
+        throw new GoogleCalendarEventConflictError(eventId);
       throw error;
     }
     if (!data.id)
