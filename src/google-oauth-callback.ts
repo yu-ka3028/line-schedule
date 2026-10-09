@@ -1,6 +1,6 @@
 import { encryptWebhookPayload } from './crypto.js';
 import type { GoogleConnectionStore } from './google-connection-store.js';
-import { GOOGLE_CALENDAR_EVENTS_SCOPE } from './google-oauth.js';
+import { GOOGLE_REQUIRED_SCOPES } from './google-oauth.js';
 import {
   hashGoogleOAuthState,
   type GoogleOAuthStateStore,
@@ -64,10 +64,12 @@ function validateTokenSet(tokens: GoogleOAuthTokenSet, now: Date): void {
     )
   )
     throw new GoogleOAuthCallbackError('Invalid Google OAuth scopes');
-  if (!tokens.scopes.includes(GOOGLE_CALENDAR_EVENTS_SCOPE))
-    throw new GoogleOAuthCallbackError(
-      'Required Google Calendar scope is missing',
-    );
+  for (const requiredScope of GOOGLE_REQUIRED_SCOPES) {
+    if (!tokens.scopes.includes(requiredScope))
+      throw new GoogleOAuthCallbackError(
+        `Required Google OAuth scope is missing: ${requiredScope}`,
+      );
+  }
   if (
     !(tokens.tokenExpiresAt instanceof Date) ||
     Number.isNaN(tokens.tokenExpiresAt.getTime()) ||

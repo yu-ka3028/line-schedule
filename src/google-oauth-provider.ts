@@ -4,6 +4,7 @@ import type {
   GoogleOAuthCodeExchanger,
   GoogleOAuthTokenSet,
 } from './google-oauth-callback.js';
+import { GOOGLE_REQUIRED_SCOPES } from './google-oauth.js';
 
 export type GoogleOAuthTokenResponse = GoogleOAuthTokenSet;
 
@@ -32,6 +33,11 @@ export class GoogleapisOAuthTokenProvider implements GoogleOAuthTokenProvider {
       throw new Error('Google token response is incomplete');
     }
 
+    const scopes = (tokens.scope ?? '').split(' ').filter(Boolean);
+    if (GOOGLE_REQUIRED_SCOPES.some((scope) => !scopes.includes(scope))) {
+      throw new Error('Google token response is missing required scopes');
+    }
+
     this.client.setCredentials(tokens);
     const { data } = await google
       .oauth2({
@@ -45,7 +51,7 @@ export class GoogleapisOAuthTokenProvider implements GoogleOAuthTokenProvider {
       accessToken: tokens.access_token,
       ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
       tokenExpiresAt: new Date(tokens.expiry_date),
-      scopes: (tokens.scope ?? '').split(' ').filter(Boolean),
+      scopes,
       googleAccountId: data.id,
     };
   }

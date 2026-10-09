@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  buildGoogleOAuthUrl,
-  GOOGLE_CALENDAR_EVENTS_SCOPE,
-} from './google-oauth.js';
+import { buildGoogleOAuthUrl, GOOGLE_REQUIRED_SCOPES } from './google-oauth.js';
 
 const options = {
   clientId: 'client-id.apps.googleusercontent.com',
@@ -17,7 +14,9 @@ describe('Google OAuth URL', () => {
     expect(url.origin + url.pathname).toBe(
       'https://accounts.google.com/o/oauth2/v2/auth',
     );
-    expect(url.searchParams.get('scope')).toBe(GOOGLE_CALENDAR_EVENTS_SCOPE);
+    expect(url.searchParams.get('scope')).toBe(
+      GOOGLE_REQUIRED_SCOPES.join(' '),
+    );
     expect(url.searchParams.get('access_type')).toBe('offline');
     expect(url.searchParams.get('prompt')).toBe('consent');
     expect(url.searchParams.get('state')).toBe(options.state);
