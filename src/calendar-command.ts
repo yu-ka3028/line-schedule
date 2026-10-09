@@ -1,6 +1,15 @@
+const MAX_BODY_LENGTH = 1_024;
 const MAX_TITLE_LENGTH = 200;
 const MAX_DATETIME_LENGTH = 64;
 const MAX_TIMEZONE_LENGTH = 64;
+const TEXT_COMMAND_LINES = 5;
+const TEXT_COMMAND_HEADER = '予定登録';
+const TEXT_COMMAND_FIELDS = [
+  ['タイトル', 'title'],
+  ['開始', 'start'],
+  ['終了', 'end'],
+  ['タイムゾーン', 'timezone'],
+] as const;
 const ISO_DATETIME =
   /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 
@@ -33,7 +42,7 @@ function requiredBoundedString(
   if (
     typeof value !== 'string' ||
     value.length === 0 ||
-    value.length > maxLength
+    Array.from(value).length > maxLength
   )
     throw new CalendarCommandValidationError(`Invalid ${field}`);
   return value;
@@ -92,7 +101,61 @@ export function parseCalendarCommand(value: unknown): CalendarCreateCommand {
   };
 }
 
+export function parseCalendarTextCommand(text: unknown): CalendarCreateCommand {
+  if (typeof text !== 'string')
+    throw new CalendarCommandValidationError(
+      'Unsupported calendar text command',
+    );
+
+  const bodyLength = [...text].length;
+  if (bodyLength === 0 || bodyLength > MAX_BODY_LENGTH)
+    throw new CalendarCommandValidationError('Invalid calendar text command');
+
+  // Accept CRLF and CR as line endings, but do not trim or otherwise rewrite
+  // command content. Other Unicode line separators remain part of a line and
+  // therefore cannot accidentally create an accepted field.
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  if (lines.length !== TEXT_COMMAND_LINES || lines[0] !== TEXT_COMMAND_HEADER)
+    throw new CalendarCommandValidationError(
+      'Unsupported calendar text command',
+    );
+
+  const values: Record<string, string> = {};
+  for (let index = 0; index < TEXT_COMMAND_FIELDS.length; index += 1) {
+    const [label, field] = TEXT_COMMAND_FIELDS[index];
+    const line = lines[index + 1];
+    const prefix = `${label}: `;
+    if (!line.startsWith(prefix))
+      throw new CalendarCommandValidationError('Invalid calendar text command');
+    const value = line.slice(prefix.length);
+    if (value.length === 0 || Object.hasOwn(values, field))
+      throw new CalendarCommandValidationError('Invalid calendar text command');
+    values[field] = value;
+  }
+
+  if (Object.keys(values).length !== TEXT_COMMAND_FIELDS.length)
+    throw new CalendarCommandValidationError('Invalid calendar text command');
+
+  if ([...values.title].length > MAX_TITLE_LENGTH)
+    throw new CalendarCommandValidationError('Invalid title');
+  if ([...values.start].length > MAX_DATETIME_LENGTH)
+    throw new CalendarCommandValidationError('Invalid start');
+  if ([...values.end].length > MAX_DATETIME_LENGTH)
+    throw new CalendarCommandValidationError('Invalid end');
+  if ([...values.timezone].length > MAX_TIMEZONE_LENGTH)
+    throw new CalendarCommandValidationError('Invalid timezone');
+
+  return parseCalendarCommand({
+    type: 'calendar_create',
+    title: values.title,
+    start: values.start,
+    end: values.end,
+    timezone: values.timezone,
+  });
+}
+
 export const calendarCommandLimits = {
+  body: MAX_BODY_LENGTH,
   title: MAX_TITLE_LENGTH,
   datetime: MAX_DATETIME_LENGTH,
   timezone: MAX_TIMEZONE_LENGTH,
