@@ -40,11 +40,13 @@ export interface GoogleCalendarClient {
 }
 
 type CalendarApi = ReturnType<typeof google.calendar>;
+type OAuth2Api = InstanceType<typeof google.auth.OAuth2>;
 
 export type GoogleCalendarClientOptions = {
   clientId: string;
   clientSecret: string;
-  calendar?: CalendarApi;
+  oauthFactory?: (clientId: string, clientSecret: string) => OAuth2Api;
+  calendarFactory?: (auth: OAuth2Api) => CalendarApi;
 };
 
 /**
@@ -54,18 +56,17 @@ export type GoogleCalendarClientOptions = {
  * exactly-once completion.
  */
 export class GoogleapisCalendarClient implements GoogleCalendarClient {
-  private readonly oauthClient: InstanceType<typeof google.auth.OAuth2>;
-  private readonly calendarFactory: () => CalendarApi;
+  private readonly oauthFactory: () => OAuth2Api;
+  private readonly calendarFactory: (auth: OAuth2Api) => CalendarApi;
 
   constructor(options: GoogleCalendarClientOptions) {
-    this.oauthClient = new google.auth.OAuth2(
-      options.clientId,
-      options.clientSecret,
-    );
+    this.oauthFactory =
+      options.oauthFactory === undefined
+        ? () => new google.auth.OAuth2(options.clientId, options.clientSecret)
+        : () => options.oauthFactory!(options.clientId, options.clientSecret);
     this.calendarFactory =
-      options.calendar === undefined
-        ? () => google.calendar({ version: 'v3', auth: this.oauthClient })
-        : () => options.calendar as CalendarApi;
+      options.calendarFactory ??
+      ((auth) => google.calendar({ version: 'v3', auth }));
   }
 
   async createEvent(
@@ -75,7 +76,8 @@ export class GoogleapisCalendarClient implements GoogleCalendarClient {
   ): Promise<GoogleCalendarEvent> {
     if (!idempotencyKey) throw new Error('invalid idempotency key');
     const eventId = googleCalendarEventIdFromOperationKey(idempotencyKey);
-    this.oauthClient.setCredentials({
+    const oauthClient = this.oauthFactory();
+    oauthClient.setCredentials({
       access_token: connection.accessToken,
       ...(connection.tokenExpiresAt
         ? { expiry_date: connection.tokenExpiresAt.getTime() }
@@ -87,7 +89,7 @@ export class GoogleapisCalendarClient implements GoogleCalendarClient {
 
     let data;
     try {
-      ({ data } = await this.calendarFactory().events.insert({
+      ({ data } = await this.calendarFactory(oauthClient).events.insert({
         calendarId: 'primary',
         requestBody: {
           id: eventId,

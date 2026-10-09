@@ -14,6 +14,13 @@ export type ScheduleLink = {
 
 export type ScheduleLinkCreate = Omit<ScheduleLink, 'id' | 'source' | 'status'>;
 
+export class ScheduleLinkCreateConflictError extends Error {
+  constructor(readonly existingLink: ScheduleLink | null) {
+    super('schedule link already exists');
+    this.name = 'ScheduleLinkCreateConflictError';
+  }
+}
+
 export interface ScheduleLinkStore {
   getByBotEventId(
     userId: string,
@@ -28,6 +35,15 @@ const UUID =
 function required(value: string, name: string): void {
   if (typeof value !== 'string' || value.length === 0 || value.length > 1024)
     throw new Error(`invalid ${name}`);
+}
+
+function isBotEventUniqueViolation(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const value = error as { code?: unknown; constraint?: unknown };
+  return (
+    value.code === '23505' &&
+    value.constraint === 'schedule_links_user_bot_event_unique'
+  );
 }
 
 function validateLink(link: ScheduleLinkCreate): void {
@@ -96,7 +112,22 @@ export class SupabaseScheduleLinkStore implements ScheduleLinkStore {
         'id,user_id,google_calendar_id,google_event_id,bot_event_id,source,status',
       )
       .single();
-    if (error) throw error;
+    if (error) {
+      if (isBotEventUniqueViolation(error)) {
+        let existingLink: ScheduleLink | null = null;
+        try {
+          existingLink = await this.getByBotEventId(
+            link.userId,
+            link.botEventId,
+          );
+        } catch {
+          // Keep the database error outside the store interface. The executor
+          // can retry its read when the competing transaction is visible.
+        }
+        throw new ScheduleLinkCreateConflictError(existingLink);
+      }
+      throw error;
+    }
     return toScheduleLink(data as Record<string, unknown>);
   }
 }
