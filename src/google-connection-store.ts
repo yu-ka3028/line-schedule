@@ -16,8 +16,46 @@ export interface GoogleConnectionStore {
   upsert(connection: EncryptedGoogleConnection): Promise<void>;
 }
 
-export class SupabaseGoogleConnectionStore implements GoogleConnectionStore {
+export interface GoogleConnectionReader {
+  getByUserId(userId: string): Promise<EncryptedGoogleConnection | null>;
+}
+
+export type DecryptedGoogleConnection = {
+  userId: string;
+  googleAccountId: string;
+  accessToken: string;
+  refreshToken?: string;
+  tokenExpiresAt: Date | null;
+  scopes: string[];
+};
+
+export class SupabaseGoogleConnectionStore
+  implements GoogleConnectionStore, GoogleConnectionReader
+{
   constructor(private readonly client: SupabaseClient) {}
+
+  async getByUserId(userId: string): Promise<EncryptedGoogleConnection | null> {
+    if (!userId) throw new Error('Google connection user ID is required');
+    const { data, error } = await this.client
+      .from('google_connections')
+      .select(
+        'user_id,google_account_id,access_token_ciphertext,refresh_token_ciphertext,token_expires_at,scopes',
+      )
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    return {
+      userId: data.user_id,
+      googleAccountId: data.google_account_id,
+      accessTokenCiphertext: data.access_token_ciphertext,
+      refreshTokenCiphertext: data.refresh_token_ciphertext,
+      tokenExpiresAt: data.token_expires_at
+        ? new Date(data.token_expires_at)
+        : null,
+      scopes: data.scopes,
+    };
+  }
 
   async upsert(connection: EncryptedGoogleConnection): Promise<void> {
     if (!connection.userId || !connection.googleAccountId)
