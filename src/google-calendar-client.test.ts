@@ -12,7 +12,11 @@ vi.mock('googleapis', () => ({
   },
 }));
 
-import { GoogleapisCalendarClient } from './google-calendar-client.js';
+import {
+  GoogleCalendarEventConflictError,
+  GoogleapisCalendarClient,
+} from './google-calendar-client.js';
+import { googleCalendarEventIdFromOperationKey } from './google-calendar-event-id.js';
 import type { DecryptedGoogleConnection } from './google-connection-store.js';
 
 const connection: DecryptedGoogleConnection = {
@@ -52,6 +56,7 @@ describe('GoogleapisCalendarClient', () => {
     expect(insert).toHaveBeenCalledWith({
       calendarId: 'primary',
       requestBody: {
+        id: googleCalendarEventIdFromOperationKey('operation-key'),
         summary: 'Planning',
         start: { dateTime: input.start, timeZone: input.timezone },
         end: { dateTime: input.end, timeZone: input.timezone },
@@ -78,6 +83,27 @@ describe('GoogleapisCalendarClient', () => {
       expiry_date: expiredConnection.tokenExpiresAt.getTime(),
       refresh_token: 'refresh-token',
     });
+  });
+
+  it('classifies an API conflict with the deterministic event ID', async () => {
+    const insert = vi.fn().mockRejectedValue({ response: { status: 409 } });
+    const client = new GoogleapisCalendarClient({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      calendar: { events: { insert } } as never,
+    });
+
+    await expect(
+      client.createEvent(connection, input, 'same-key'),
+    ).rejects.toEqual(
+      expect.objectContaining({
+        name: 'GoogleCalendarEventConflictError',
+        eventId: googleCalendarEventIdFromOperationKey('same-key'),
+      }),
+    );
+    await expect(
+      client.createEvent(connection, input, 'same-key'),
+    ).rejects.toBeInstanceOf(GoogleCalendarEventConflictError);
   });
 
   it('does not claim adapter-level exactly-once behavior', async () => {

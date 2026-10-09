@@ -1,12 +1,35 @@
 import { google } from 'googleapis';
 
 import type { CalendarEventInput } from './calendar-provider.js';
+import { googleCalendarEventIdFromOperationKey } from './google-calendar-event-id.js';
 import type { DecryptedGoogleConnection } from './google-connection-store.js';
 
 export type GoogleCalendarEvent = {
   eventId: string;
   htmlLink?: string;
 };
+
+export class GoogleCalendarEventConflictError extends Error {
+  constructor(
+    readonly eventId: string,
+    readonly cause?: unknown,
+  ) {
+    super('Google Calendar event already exists', { cause });
+    this.name = 'GoogleCalendarEventConflictError';
+  }
+}
+
+export function isGoogleCalendarConflictError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const value = error as {
+    code?: unknown;
+    status?: unknown;
+    response?: { status?: unknown };
+  };
+  return (
+    value.code === 409 || value.status === 409 || value.response?.status === 409
+  );
+}
 
 export interface GoogleCalendarClient {
   createEvent(
@@ -25,9 +48,10 @@ export type GoogleCalendarClientOptions = {
 };
 
 /**
- * Thin Google API adapter. It intentionally has no idempotency mechanism:
- * Google Calendar insert is not exactly-once. The executor must reserve and
- * reuse its schedule_links/operation key before calling this adapter.
+ * Thin Google API adapter. Google Calendar insert is not exactly-once. The
+ * executor must reserve and reuse its schedule_links/operation key before
+ * calling this adapter; a 409 is classified rather than treated as proof of
+ * exactly-once completion.
  */
 export class GoogleapisCalendarClient implements GoogleCalendarClient {
   private readonly oauthClient: InstanceType<typeof google.auth.OAuth2>;
@@ -50,6 +74,7 @@ export class GoogleapisCalendarClient implements GoogleCalendarClient {
     idempotencyKey: string,
   ): Promise<GoogleCalendarEvent> {
     if (!idempotencyKey) throw new Error('invalid idempotency key');
+    const eventId = googleCalendarEventIdFromOperationKey(idempotencyKey);
     this.oauthClient.setCredentials({
       access_token: connection.accessToken,
       ...(connection.tokenExpiresAt
@@ -60,14 +85,22 @@ export class GoogleapisCalendarClient implements GoogleCalendarClient {
         : {}),
     });
 
-    const { data } = await this.calendarFactory().events.insert({
-      calendarId: 'primary',
-      requestBody: {
-        summary: input.title,
-        start: { dateTime: input.start, timeZone: input.timezone },
-        end: { dateTime: input.end, timeZone: input.timezone },
-      },
-    });
+    let data;
+    try {
+      ({ data } = await this.calendarFactory().events.insert({
+        calendarId: 'primary',
+        requestBody: {
+          id: eventId,
+          summary: input.title,
+          start: { dateTime: input.start, timeZone: input.timezone },
+          end: { dateTime: input.end, timeZone: input.timezone },
+        },
+      }));
+    } catch (error) {
+      if (isGoogleCalendarConflictError(error))
+        throw new GoogleCalendarEventConflictError(eventId, error);
+      throw error;
+    }
     if (!data.id)
       throw new Error('Google Calendar response is missing event ID');
     return {
