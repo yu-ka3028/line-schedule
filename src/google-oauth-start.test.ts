@@ -4,6 +4,7 @@ import {
   createGoogleOAuthStart,
   GoogleOAuthStartError,
 } from './google-oauth-start.js';
+import { GOOGLE_REQUIRED_SCOPES } from './google-oauth.js';
 import { hashGoogleOAuthState } from './google-oauth-state.js';
 import type {
   GoogleOAuthStateRecord,
@@ -52,7 +53,7 @@ describe('Google OAuth start service', () => {
     expect(parsed.searchParams.get('client_id')).toBe(config.clientId);
     expect(parsed.searchParams.get('redirect_uri')).toBe(config.redirectUri);
     expect(parsed.searchParams.get('scope')).toBe(
-      'https://www.googleapis.com/auth/calendar.events',
+      GOOGLE_REQUIRED_SCOPES.join(' '),
     );
     expect(parsed.searchParams.get('response_type')).toBe('code');
   });

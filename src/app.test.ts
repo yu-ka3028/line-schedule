@@ -101,7 +101,7 @@ describe('app', () => {
           googleAccountId: 'account',
           accessToken: 'access',
           tokenExpiresAt: new Date(Date.now() + 60_000),
-          scopes: ['https://www.googleapis.com/auth/calendar.events'],
+          scopes: ['openid', 'https://www.googleapis.com/auth/calendar.events'],
         }),
       },
       connectionStore: { upsert: vi.fn().mockResolvedValue(undefined) },

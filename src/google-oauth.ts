@@ -1,7 +1,12 @@
 const GOOGLE_AUTHORIZATION_ENDPOINT =
   'https://accounts.google.com/o/oauth2/v2/auth';
+export const GOOGLE_OPENID_SCOPE = 'openid';
 export const GOOGLE_CALENDAR_EVENTS_SCOPE =
   'https://www.googleapis.com/auth/calendar.events';
+export const GOOGLE_REQUIRED_SCOPES = [
+  GOOGLE_OPENID_SCOPE,
+  GOOGLE_CALENDAR_EVENTS_SCOPE,
+] as const;
 
 export type GoogleOAuthUrlOptions = {
   clientId: string;
@@ -39,7 +44,7 @@ export function buildGoogleOAuthUrl(options: GoogleOAuthUrlOptions): string {
     client_id: options.clientId,
     redirect_uri: options.redirectUri,
     response_type: 'code',
-    scope: GOOGLE_CALENDAR_EVENTS_SCOPE,
+    scope: GOOGLE_REQUIRED_SCOPES.join(' '),
     state: options.state,
     access_type: options.accessType ?? 'offline',
     prompt: options.prompt ?? 'consent',

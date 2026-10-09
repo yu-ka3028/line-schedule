@@ -6,6 +6,7 @@ import {
   type GoogleOAuthCodeExchanger,
   type GoogleOAuthTokenSet,
 } from './google-oauth-callback.js';
+import { GOOGLE_OPENID_SCOPE } from './google-oauth.js';
 import type {
   EncryptedGoogleConnection,
   GoogleConnectionStore,
@@ -47,7 +48,10 @@ function validTokens(): GoogleOAuthTokenSet {
     accessToken: 'access-value',
     refreshToken: 'refresh-value',
     tokenExpiresAt: new Date('2025-05-01T01:00:00.000Z'),
-    scopes: ['https://www.googleapis.com/auth/calendar.events'],
+    scopes: [
+      GOOGLE_OPENID_SCOPE,
+      'https://www.googleapis.com/auth/calendar.events',
+    ],
   };
 }
 
@@ -120,6 +124,24 @@ describe('Google OAuth callback service', () => {
     );
 
     expect(connectionStore.value?.refreshTokenCiphertext).toBeUndefined();
+  });
+
+  it('rejects tokens without the OIDC scope', async () => {
+    const tokens = validTokens();
+    tokens.scopes = ['https://www.googleapis.com/auth/calendar.events'];
+
+    await expect(
+      handleGoogleOAuthCallback(
+        { code: 'code', state: 'state' },
+        {
+          stateStore: new FakeStateStore(),
+          codeExchanger: new FakeExchanger(tokens),
+          connectionStore: new FakeConnectionStore(),
+          encryptionKey: key,
+          now: () => now,
+        },
+      ),
+    ).rejects.toThrow('Required Google OAuth scope is missing');
   });
 
   it('consumes state even when code exchange fails', async () => {
