@@ -3,6 +3,7 @@ import {
   type CalendarCreateCommand,
 } from './calendar-command.js';
 import {
+  CalendarCreateExecutorError,
   executeCalendarCreate,
   type CalendarCreateExecutorDependencies,
 } from './calendar-create-executor.js';
@@ -15,7 +16,7 @@ export type CalendarCreateFlowDependencies =
   };
 
 export class CalendarCreateFlowError extends Error {
-  constructor(readonly code: 'invalid_input' | 'execution_failed') {
+  constructor(readonly code: 'invalid_input' | 'retryable') {
     super(`calendar create flow failed: ${code}`);
     this.name = 'CalendarCreateFlowError';
   }
@@ -47,8 +48,13 @@ export async function executeCalendarCreateText(
       operationKey,
       dependencies,
     );
-    return { text: CALENDAR_CREATE_SUCCESS_TEXT, ...result };
-  } catch {
-    throw new CalendarCreateFlowError('execution_failed');
+    return { ...result, text: CALENDAR_CREATE_SUCCESS_TEXT };
+  } catch (error) {
+    if (error instanceof CalendarCreateExecutorError) {
+      throw new CalendarCreateFlowError(
+        error.code === 'invalid_input' ? 'invalid_input' : 'retryable',
+      );
+    }
+    throw new CalendarCreateFlowError('retryable');
   }
 }

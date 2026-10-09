@@ -1,7 +1,14 @@
 import type { JobExecutor } from './processing-jobs.js';
-import { createLineOAuthPushText } from './line-oauth-push.js';
+import { decryptWebhookPayload } from './crypto.js';
+import {
+  executeCalendarCreateText,
+  CalendarCreateFlowError,
+  CALENDAR_CREATE_SUCCESS_TEXT,
+  type CalendarCreateFlowDependencies,
+} from './calendar-create-flow.js';
+import { createLineOAuthPushTextFromPlaintextPayload } from './line-oauth-push.js';
 import type { LineEventProcessingStore } from './line-event-processing-store.js';
-import type { LinePushClient } from './line-push-client.js';
+import { LINE_PUSH_TEXT, type LinePushClient } from './line-push-client.js';
 import type { LinePushStore } from './line-push-store.js';
 
 export type LinePushExecutionOutcome =
@@ -21,6 +28,7 @@ export type LineOAuthPushExecutorDependencies = {
   processingStore: LineEventProcessingStore;
   encryptionKey: Buffer;
   createGoogleOAuthStart: (userId: string) => Promise<string>;
+  calendarCreate?: CalendarCreateFlowDependencies;
 };
 
 export function createLinePushExecutor(
@@ -46,21 +54,71 @@ export function createLinePushExecutor(
           processingToken,
         );
         if (!event) throw new Error('line_event_processing_record_missing');
-        const text = await createLineOAuthPushText(
+        const plaintext = decryptWebhookPayload(
           event.payloadCiphertext,
-          event.userId,
-          {
-            encryptionKey: oauth.encryptionKey,
-            createGoogleOAuthStart: oauth.createGoogleOAuthStart,
-          },
+          oauth.encryptionKey,
         );
-        if (text !== null) {
-          if (!client.pushText) throw new Error('line_push_text_unavailable');
+        let storedEvent: unknown;
+        try {
+          storedEvent = JSON.parse(plaintext);
+        } catch {
+          throw new Error('line_event_invalid');
+        }
+        const message =
+          typeof storedEvent === 'object' && storedEvent !== null
+            ? (storedEvent as {
+                type?: unknown;
+                message?: { type?: unknown; text?: unknown };
+              })
+            : undefined;
+        const text =
+          message?.type === 'message' &&
+          message.message?.type === 'text' &&
+          typeof message.message.text === 'string'
+            ? message.message.text
+            : null;
+        if (text === 'Google連携') {
+          const oauthText = await createLineOAuthPushTextFromPlaintextPayload(
+            plaintext,
+            event.userId,
+            { createGoogleOAuthStart: oauth.createGoogleOAuthStart },
+          );
+          if (!oauthText || !client.pushText)
+            throw new Error('line_push_text_unavailable');
           result = await client.pushText(
             delivery.recipientId,
             delivery.retryKey,
-            text,
+            oauthText,
           );
+        } else if (text?.startsWith('予定登録')) {
+          if (!oauth.calendarCreate || !client.pushText)
+            throw new Error('line_push_text_unavailable');
+          try {
+            await executeCalendarCreateText(
+              text,
+              event.userId,
+              job.jobId,
+              oauth.calendarCreate,
+            );
+            result = await client.pushText(
+              delivery.recipientId,
+              delivery.retryKey,
+              CALENDAR_CREATE_SUCCESS_TEXT,
+            );
+          } catch (error) {
+            if (
+              error instanceof CalendarCreateFlowError &&
+              error.code === 'invalid_input'
+            ) {
+              result = await client.pushText(
+                delivery.recipientId,
+                delivery.retryKey,
+                LINE_PUSH_TEXT,
+              );
+            } else {
+              result = 'retryable' as const;
+            }
+          }
         } else {
           result = await client.push(delivery.recipientId, delivery.retryKey);
         }
