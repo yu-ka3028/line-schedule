@@ -19,6 +19,22 @@ describe('calendar command validation', () => {
     expect(parseCalendarCommand(valid)).toEqual(valid);
   });
 
+  it.each([199, 200])('accepts a title with %s emoji code points', (length) => {
+    expect(
+      parseCalendarCommand({ ...valid, title: '😀'.repeat(length) }),
+    ).toEqual({ ...valid, title: '😀'.repeat(length) });
+  });
+
+  it.each([
+    ['title', { ...valid, title: '😀'.repeat(201) }],
+    ['datetime', { ...valid, start: 'x'.repeat(65) }],
+    ['timezone', { ...valid, timezone: 'x'.repeat(65) }],
+  ])('rejects a %s over its code point limit', (_, command) => {
+    expect(() => parseCalendarCommand(command)).toThrow(
+      CalendarCommandValidationError,
+    );
+  });
+
   it.each([
     ['wrong type', { ...valid, type: 'calendar_update' }],
     ['missing title', { ...valid, title: undefined }],
@@ -76,15 +92,34 @@ describe('calendar text command parser', () => {
     );
   });
 
+  it.each([199, 200])(
+    'accepts a title with %s emoji code points using the text parser',
+    (length) => {
+      const title = '😀'.repeat(length);
+      expect(
+        parseCalendarTextCommand(text.replace('Planning 🗓️', title)),
+      ).toEqual({
+        type: 'calendar_create',
+        title,
+        start: '2026-10-10T10:00:00+09:00',
+        end: '2026-10-10T11:00:00+09:00',
+        timezone: 'Asia/Tokyo',
+      });
+    },
+  );
+
   it('rejects oversized body and fields', () => {
     expect(() => parseCalendarTextCommand(`${text}x`.repeat(200))).toThrow(
       CalendarCommandValidationError,
     );
     expect(() =>
-      parseCalendarTextCommand(text.replace('Planning 🗓️', 'x'.repeat(201))),
+      parseCalendarTextCommand(text.replace('Planning 🗓️', '😀'.repeat(201))),
     ).toThrow(CalendarCommandValidationError);
     expect(() =>
       parseCalendarTextCommand(text.replace('Asia/Tokyo', 'x'.repeat(65))),
+    ).toThrow(CalendarCommandValidationError);
+    expect(() =>
+      parseCalendarTextCommand(text.replace('10:00:00', 'x'.repeat(65))),
     ).toThrow(CalendarCommandValidationError);
   });
 
