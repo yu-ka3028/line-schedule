@@ -39,10 +39,21 @@ function required(value: string, name: string): void {
 
 function isBotEventUniqueViolation(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
-  const value = error as { code?: unknown; constraint?: unknown };
-  return (
-    value.code === '23505' &&
-    value.constraint === 'schedule_links_user_bot_event_unique'
+  const value = error as {
+    code?: unknown;
+    constraint?: unknown;
+    message?: unknown;
+    details?: unknown;
+  };
+  if (value.code !== '23505') return false;
+
+  // Supabase/PostgREST may omit constraint and put the index name in the
+  // diagnostic text instead. Only classify this known unique index; do not
+  // include the database error in the store's public error.
+  return [value.constraint, value.message, value.details].some(
+    (field) =>
+      typeof field === 'string' &&
+      field.toLowerCase().includes('user_bot_event'),
   );
 }
 

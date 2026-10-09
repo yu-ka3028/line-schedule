@@ -23,7 +23,7 @@ const row = {
 };
 
 describe('SupabaseScheduleLinkStore', () => {
-  it('classifies bot-event unique races and rereads the winner without exposing raw errors', async () => {
+  it('classifies a PostgREST unique race and rereads the winner', async () => {
     const from = vi
       .fn()
       .mockReturnValueOnce({
@@ -33,8 +33,11 @@ describe('SupabaseScheduleLinkStore', () => {
               data: null,
               error: {
                 code: '23505',
-                constraint: 'schedule_links_user_bot_event_unique',
-                details: 'private database detail',
+                message:
+                  'duplicate key value violates unique constraint "schedule_links_user_bot_event_unique"',
+                details:
+                  'Key (user_id, bot_event_id)=(redacted) already exists.',
+                hint: null,
               },
             }),
           }),
@@ -59,5 +62,50 @@ describe('SupabaseScheduleLinkStore', () => {
       existingLink: expect.objectContaining({ botEventId: link.botEventId }),
     });
     expect(error).not.toHaveProperty('cause');
+  });
+
+  it('returns a conflict without exposing a failed reread error', async () => {
+    const from = vi
+      .fn()
+      .mockReturnValueOnce({
+        insert: () => ({
+          select: () => ({
+            single: async () => ({
+              data: null,
+              error: {
+                code: '23505',
+                message:
+                  'duplicate key value violates unique constraint "schedule_links_user_bot_event_unique"',
+                details:
+                  'Key (user_id, bot_event_id)=(redacted) already exists.',
+                hint: null,
+              },
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({
+                data: null,
+                error: {
+                  code: 'PGRST116',
+                  message: 'single JSON object requested',
+                  details: 'redacted reread detail',
+                  hint: null,
+                },
+              }),
+            }),
+          }),
+        }),
+      });
+    const store = new SupabaseScheduleLinkStore({ from } as never);
+
+    await expect(store.create(link)).rejects.toMatchObject({
+      name: 'ScheduleLinkCreateConflictError',
+      existingLink: null,
+    });
   });
 });
