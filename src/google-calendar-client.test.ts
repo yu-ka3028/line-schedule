@@ -1,5 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 
+const mocks = vi.hoisted(() => ({
+  setCredentials: vi.fn(),
+}));
+
+vi.mock('googleapis', () => ({
+  google: {
+    auth: {
+      OAuth2: vi.fn(() => ({ setCredentials: mocks.setCredentials })),
+    },
+  },
+}));
+
 import { GoogleapisCalendarClient } from './google-calendar-client.js';
 import type { DecryptedGoogleConnection } from './google-connection-store.js';
 
@@ -44,6 +56,27 @@ describe('GoogleapisCalendarClient', () => {
         start: { dateTime: input.start, timeZone: input.timezone },
         end: { dateTime: input.end, timeZone: input.timezone },
       },
+    });
+  });
+
+  it('passes expiry epoch milliseconds and refresh token to OAuth credentials', async () => {
+    const insert = vi.fn().mockResolvedValue({ data: { id: 'event-id' } });
+    const client = new GoogleapisCalendarClient({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      calendar: { events: { insert } } as never,
+    });
+    const expiredConnection = {
+      ...connection,
+      tokenExpiresAt: new Date('2025-01-01T00:00:00.000Z'),
+    };
+
+    await client.createEvent(expiredConnection, input, 'operation-key');
+
+    expect(mocks.setCredentials).toHaveBeenCalledWith({
+      access_token: 'access-token',
+      expiry_date: expiredConnection.tokenExpiresAt.getTime(),
+      refresh_token: 'refresh-token',
     });
   });
 

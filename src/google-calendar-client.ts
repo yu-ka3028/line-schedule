@@ -52,6 +52,9 @@ export class GoogleapisCalendarClient implements GoogleCalendarClient {
     if (!idempotencyKey) throw new Error('invalid idempotency key');
     this.oauthClient.setCredentials({
       access_token: connection.accessToken,
+      ...(connection.tokenExpiresAt
+        ? { expiry_date: connection.tokenExpiresAt.getTime() }
+        : {}),
       ...(connection.refreshToken
         ? { refresh_token: connection.refreshToken }
         : {}),
