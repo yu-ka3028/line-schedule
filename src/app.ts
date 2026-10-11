@@ -68,6 +68,10 @@ import { createSupabaseGoogleCalendarConnectionReader } from './google-calendar-
 import { GoogleapisCalendarClient } from './google-calendar-client.js';
 import { createSupabaseScheduleLinkStore } from './schedule-link-store.js';
 import type { CalendarCreateFlowDependencies } from './calendar-create-flow.js';
+import {
+  createSupabasePendingCalendarConfirmationStore,
+  type PendingCalendarConfirmationStore,
+} from './pending-calendar-confirmation-store.js';
 import { createSupabaseGoogleOAuthStateStore } from './google-oauth-state-store.js';
 import { GoogleapisOAuthTokenProvider } from './google-oauth-provider.js';
 import { createGoogleOAuthStart } from './google-oauth-start.js';
@@ -99,6 +103,7 @@ export type AppDependencies = {
     linePushUsageLogs?: UsageLogStore;
     lineOAuthPush?: LineOAuthPushExecutorDependencies;
     calendarCreate?: CalendarCreateFlowDependencies;
+    pendingCalendarConfirmations?: PendingCalendarConfirmationStore;
     outbox?: LineOutboxStore;
     publisher?: QstashPublisher;
   };
@@ -277,6 +282,9 @@ export function createApp(
               calendarCreate:
                 dependencies.qstash.lineOAuthPush.calendarCreate ??
                 dependencies.qstash.calendarCreate,
+              pendingConfirmations:
+                dependencies.qstash.lineOAuthPush.pendingConfirmations ??
+                dependencies.qstash.pendingCalendarConfirmations,
             };
           } else {
             const oauthConfig =
@@ -301,6 +309,9 @@ export function createApp(
                   clientSecret: oauthConfig.clientSecret,
                 }),
               },
+              pendingConfirmations:
+                dependencies.qstash?.pendingCalendarConfirmations ??
+                createSupabasePendingCalendarConfirmationStore(encryptionKey),
             };
           }
         }

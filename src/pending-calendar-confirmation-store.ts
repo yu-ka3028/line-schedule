@@ -12,7 +12,12 @@ import {
 import { createSupabaseAdminClient } from './supabase-admin.js';
 
 export type PendingCalendarConfirmationStatus =
-  'pending' | 'confirmed' | 'cancelled' | 'expired';
+  | 'pending'
+  | 'processing'
+  | 'retryable'
+  | 'confirmed'
+  | 'cancelled'
+  | 'expired';
 
 export type PendingCalendarConfirmation = {
   userId: string;
@@ -22,6 +27,7 @@ export type PendingCalendarConfirmation = {
   status: PendingCalendarConfirmationStatus;
   createdAt: Date;
   updatedAt: Date;
+  leaseUntil?: Date;
 };
 
 export interface PendingCalendarConfirmationStore {
@@ -45,6 +51,14 @@ export interface PendingCalendarConfirmationStore {
     operationKey: string,
     now: Date,
   ): Promise<PendingCalendarConfirmation | null>;
+  /** Atomically claims the user's current pending/retryable confirmation. */
+  claimPending?(
+    userId: string,
+    now: Date,
+  ): Promise<PendingCalendarConfirmation | null>;
+  finish?(userId: string, operationKey: string, now: Date): Promise<void>;
+  requeue?(userId: string, operationKey: string, now: Date): Promise<void>;
+  getPending?(userId: string): Promise<PendingCalendarConfirmation | null>;
 }
 
 const UUID =
@@ -69,9 +83,14 @@ function toRecord(
     typeof row.expires_at !== 'string' ||
     typeof row.created_at !== 'string' ||
     typeof row.updated_at !== 'string' ||
-    !['pending', 'confirmed', 'cancelled', 'expired'].includes(
-      String(row.status),
-    )
+    ![
+      'pending',
+      'processing',
+      'retryable',
+      'confirmed',
+      'cancelled',
+      'expired',
+    ].includes(String(row.status))
   )
     throw new Error('invalid pending confirmation row');
   const command = parseCalendarCommand(
@@ -85,6 +104,9 @@ function toRecord(
     status: row.status as PendingCalendarConfirmationStatus,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
+    ...(typeof row.lease_until === 'string'
+      ? { leaseUntil: new Date(row.lease_until) }
+      : {}),
   };
 }
 
@@ -117,13 +139,23 @@ export class SupabasePendingCalendarConfirmationStore implements PendingCalendar
         user_id: input.userId,
         operation_key: input.operationKey,
         command_ciphertext: ciphertext,
+        confirmation_ciphertext: encryptWebhookPayload(
+          '確認',
+          this.encryptionKey,
+        ),
         expires_at: input.expiresAt.toISOString(),
       })
       .select(
         'user_id,operation_key,command_ciphertext,expires_at,status,created_at,updated_at',
       )
       .single();
-    if (error) throw error;
+    if (error) {
+      if ((error as { code?: string }).code === '23505') {
+        const existing = await this.get(input.userId, input.operationKey);
+        if (existing) return existing;
+      }
+      throw error;
+    }
     return toRecord(data as Record<string, unknown>, this.encryptionKey);
   }
 
@@ -135,7 +167,7 @@ export class SupabasePendingCalendarConfirmationStore implements PendingCalendar
     const { data, error } = await this.client
       .from('pending_calendar_confirmations')
       .select(
-        'user_id,operation_key,command_ciphertext,expires_at,status,created_at,updated_at',
+        'user_id,operation_key,command_ciphertext,expires_at,status,created_at,updated_at,lease_until',
       )
       .eq('user_id', userId)
       .eq('operation_key', operationKey)
@@ -176,6 +208,65 @@ export class SupabasePendingCalendarConfirmationStore implements PendingCalendar
   }
   cancel(userId: string, operationKey: string, now: Date) {
     return this.transition('cancel', userId, operationKey, now);
+  }
+
+  async getPending(
+    userId: string,
+  ): Promise<PendingCalendarConfirmation | null> {
+    if (!UUID.test(userId)) throw new Error('invalid user ID');
+    const { data, error } = await this.client
+      .from('pending_calendar_confirmations')
+      .select(
+        'user_id,operation_key,command_ciphertext,expires_at,status,created_at,updated_at,lease_until',
+      )
+      .eq('user_id', userId)
+      .in('status', ['pending', 'processing', 'retryable', 'confirmed'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    return data
+      ? toRecord(data as Record<string, unknown>, this.encryptionKey)
+      : null;
+  }
+
+  async claimPending(userId: string, now: Date) {
+    validateIdentity(userId, 'claim');
+    const { data, error } = await this.client.rpc(
+      'claim_pending_calendar_confirmation',
+      { p_user_id: userId, p_now: now.toISOString() },
+    );
+    if (error) throw error;
+    const row = Array.isArray(data) ? data[0] : data;
+    return row
+      ? toRecord(row as Record<string, unknown>, this.encryptionKey)
+      : null;
+  }
+
+  async finish(userId: string, operationKey: string, now: Date) {
+    validateIdentity(userId, operationKey);
+    const { error } = await this.client.rpc(
+      'finish_pending_calendar_confirmation',
+      {
+        p_user_id: userId,
+        p_operation_key: operationKey,
+        p_now: now.toISOString(),
+      },
+    );
+    if (error) throw error;
+  }
+
+  async requeue(userId: string, operationKey: string, now: Date) {
+    validateIdentity(userId, operationKey);
+    const { error } = await this.client.rpc(
+      'requeue_pending_calendar_confirmation',
+      {
+        p_user_id: userId,
+        p_operation_key: operationKey,
+        p_now: now.toISOString(),
+      },
+    );
+    if (error) throw error;
   }
 }
 

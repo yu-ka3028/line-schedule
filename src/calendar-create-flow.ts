@@ -28,6 +28,29 @@ export type CalendarCreateFlowResult = {
   linkId: string;
 };
 
+export async function executeCalendarCreateCommand(
+  command: CalendarCreateCommand,
+  userId: string,
+  operationKey: string,
+  dependencies: CalendarCreateFlowDependencies,
+): Promise<CalendarCreateFlowResult> {
+  try {
+    const result = await (dependencies.execute ?? executeCalendarCreate)(
+      userId,
+      command,
+      operationKey,
+      dependencies,
+    );
+    return { ...result, text: CALENDAR_CREATE_SUCCESS_TEXT };
+  } catch (error) {
+    if (error instanceof CalendarCreateExecutorError)
+      throw new CalendarCreateFlowError(
+        error.code === 'invalid_input' ? 'invalid_input' : 'retryable',
+      );
+    throw new CalendarCreateFlowError('retryable');
+  }
+}
+
 export async function executeCalendarCreateText(
   text: unknown,
   userId: string,
@@ -41,20 +64,10 @@ export async function executeCalendarCreateText(
     throw new CalendarCreateFlowError('invalid_input');
   }
 
-  try {
-    const result = await (dependencies.execute ?? executeCalendarCreate)(
-      userId,
-      command,
-      operationKey,
-      dependencies,
-    );
-    return { ...result, text: CALENDAR_CREATE_SUCCESS_TEXT };
-  } catch (error) {
-    if (error instanceof CalendarCreateExecutorError) {
-      throw new CalendarCreateFlowError(
-        error.code === 'invalid_input' ? 'invalid_input' : 'retryable',
-      );
-    }
-    throw new CalendarCreateFlowError('retryable');
-  }
+  return executeCalendarCreateCommand(
+    command,
+    userId,
+    operationKey,
+    dependencies,
+  );
 }

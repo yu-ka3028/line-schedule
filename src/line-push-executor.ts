@@ -2,6 +2,7 @@ import type { JobExecutor } from './processing-jobs.js';
 import { decryptWebhookPayload } from './crypto.js';
 import {
   executeCalendarCreateText,
+  executeCalendarCreateCommand,
   CalendarCreateFlowError,
   CALENDAR_CREATE_SUCCESS_TEXT,
   type CalendarCreateFlowDependencies,
@@ -10,6 +11,13 @@ import { createLineOAuthPushTextFromPlaintextPayload } from './line-oauth-push.j
 import type { LineEventProcessingStore } from './line-event-processing-store.js';
 import { LINE_PUSH_TEXT, type LinePushClient } from './line-push-client.js';
 import type { LinePushStore } from './line-push-store.js';
+import {
+  CALENDAR_CANCELLED_TEXT,
+  CALENDAR_CONFIRMATION_TEXT,
+  parseCalendarConfirmationCommand,
+  saveCalendarCreateForConfirmation,
+} from './calendar-confirmation.js';
+import type { PendingCalendarConfirmationStore } from './pending-calendar-confirmation-store.js';
 
 export type LinePushExecutionOutcome =
   'sent' | 'already_sent' | 'blocked' | 'expired' | 'terminal';
@@ -29,6 +37,7 @@ export type LineOAuthPushExecutorDependencies = {
   encryptionKey: Buffer;
   createGoogleOAuthStart: (userId: string) => Promise<string>;
   calendarCreate?: CalendarCreateFlowDependencies;
+  pendingConfirmations?: PendingCalendarConfirmationStore;
 };
 
 export function createLinePushExecutor(
@@ -90,25 +99,23 @@ export function createLinePushExecutor(
             delivery.retryKey,
             oauthText,
           );
-        } else if (text?.startsWith('予定登録')) {
-          if (!oauth.calendarCreate || !client.pushText)
+        } else if (text && parseCalendarConfirmationCommand(text)) {
+          if (
+            !oauth.calendarCreate ||
+            !client.pushText ||
+            !oauth.pendingConfirmations
+          )
             throw new Error('line_push_text_unavailable');
-          try {
-            await executeCalendarCreateText(
-              text,
+          const action = parseCalendarConfirmationCommand(text);
+          const now = new Date();
+          if (action === 'cancel') {
+            const pending = await oauth.pendingConfirmations.getPending?.(
               event.userId,
-              job.jobId,
-              oauth.calendarCreate,
             );
-            result = await client.pushText(
-              delivery.recipientId,
-              delivery.retryKey,
-              CALENDAR_CREATE_SUCCESS_TEXT,
-            );
-          } catch (error) {
             if (
-              error instanceof CalendarCreateFlowError &&
-              error.code === 'invalid_input'
+              !pending ||
+              pending.status === 'confirmed' ||
+              pending.status === 'cancelled'
             ) {
               result = await client.pushText(
                 delivery.recipientId,
@@ -116,6 +123,114 @@ export function createLinePushExecutor(
                 LINE_PUSH_TEXT,
               );
             } else {
+              const cancelled = await oauth.pendingConfirmations.cancel(
+                event.userId,
+                pending.operationKey,
+                now,
+              );
+              result = await client.pushText(
+                delivery.recipientId,
+                delivery.retryKey,
+                cancelled ? CALENDAR_CANCELLED_TEXT : LINE_PUSH_TEXT,
+              );
+            }
+          } else {
+            const pending = await oauth.pendingConfirmations.claimPending?.(
+              event.userId,
+              now,
+            );
+            if (!pending) {
+              const existing = await oauth.pendingConfirmations.getPending?.(
+                event.userId,
+              );
+              result = await client.pushText(
+                delivery.recipientId,
+                delivery.retryKey,
+                existing?.status === 'confirmed'
+                  ? CALENDAR_CREATE_SUCCESS_TEXT
+                  : LINE_PUSH_TEXT,
+              );
+            } else if (pending.status === 'confirmed') {
+              result = await client.pushText(
+                delivery.recipientId,
+                delivery.retryKey,
+                CALENDAR_CREATE_SUCCESS_TEXT,
+              );
+            } else {
+              try {
+                await executeCalendarCreateCommand(
+                  pending.command,
+                  event.userId,
+                  pending.operationKey,
+                  oauth.calendarCreate,
+                );
+                await oauth.pendingConfirmations.finish?.(
+                  event.userId,
+                  pending.operationKey,
+                  now,
+                );
+                result = await client.pushText(
+                  delivery.recipientId,
+                  delivery.retryKey,
+                  CALENDAR_CREATE_SUCCESS_TEXT,
+                );
+              } catch (error) {
+                await oauth.pendingConfirmations.requeue?.(
+                  event.userId,
+                  pending.operationKey,
+                  new Date(),
+                );
+                if (
+                  error instanceof CalendarCreateFlowError &&
+                  error.code === 'invalid_input'
+                )
+                  result = 'blocked';
+                else result = 'retryable' as const;
+              }
+            }
+          }
+        } else if (text?.startsWith('予定登録')) {
+          if (!oauth.calendarCreate || !client.pushText)
+            throw new Error('line_push_text_unavailable');
+          if (!oauth.pendingConfirmations) {
+            try {
+              await executeCalendarCreateText(
+                text,
+                event.userId,
+                job.jobId,
+                oauth.calendarCreate,
+              );
+              result = await client.pushText(
+                delivery.recipientId,
+                delivery.retryKey,
+                CALENDAR_CREATE_SUCCESS_TEXT,
+              );
+            } catch (error) {
+              if (
+                error instanceof CalendarCreateFlowError &&
+                error.code === 'invalid_input'
+              )
+                result = await client.pushText(
+                  delivery.recipientId,
+                  delivery.retryKey,
+                  LINE_PUSH_TEXT,
+                );
+              else result = 'retryable' as const;
+            }
+          } else {
+            try {
+              await saveCalendarCreateForConfirmation(
+                text,
+                event.userId,
+                job.jobId,
+                oauth.pendingConfirmations,
+              );
+              result = await client.pushText(
+                delivery.recipientId,
+                delivery.retryKey,
+                CALENDAR_CONFIRMATION_TEXT,
+              );
+            } catch {
               result = 'retryable' as const;
             }
           }
@@ -141,7 +256,7 @@ export function createLinePushExecutor(
       job.jobId,
       processingToken,
       delivery.retryKey,
-      result,
+      result as 'retryable' | 'blocked',
     );
     if (result === 'retryable' || status === 'requeued')
       throw new LinePushRetryableError();
