@@ -179,6 +179,76 @@ describe('LINE push executor opt-in outcomes', () => {
     );
   });
 
+  it('propagates the confirmation token and recovers a failed lease transition', async () => {
+    const pushText = vi.fn().mockResolvedValue('sent' as const);
+    const processingStore = oauthDependencies(
+      JSON.stringify({
+        type: 'message',
+        message: { type: 'text', text: '確認' },
+      }),
+    );
+    const pending = {
+      operationKey: 'confirmation-key',
+      command: {
+        type: 'calendar_create' as const,
+        title: 'Planning',
+        start: '2026-01-01T10:00:00+09:00',
+        end: '2026-01-01T11:00:00+09:00',
+        timezone: 'Asia/Tokyo',
+      },
+      processingToken: '00000000-0000-4000-8000-000000000005',
+      status: 'processing' as const,
+    };
+    const finish = vi.fn().mockResolvedValue(false);
+    const requeue = vi.fn().mockResolvedValue(true);
+    const store = {
+      claim: vi.fn().mockResolvedValue({
+        outcome: 'claimed' as const,
+        recipientId: 'line-user',
+        retryKey: '00000000-0000-4000-8000-000000000004',
+      }),
+      sent: vi.fn(),
+      fail: vi.fn().mockResolvedValue('requeued' as const),
+    };
+    const execute = vi
+      .fn()
+      .mockResolvedValue({ eventId: 'event', linkId: 'link' });
+
+    await expect(
+      createLinePushExecutor(
+        store,
+        { push: vi.fn(), pushText },
+        {
+          ...processingStore,
+          pendingConfirmations: {
+            claimPending: vi.fn().mockResolvedValue(pending),
+            finish,
+            requeue,
+            getPending: vi.fn(),
+            confirm: vi.fn(),
+            cancel: vi.fn(),
+            create: vi.fn(),
+            get: vi.fn(),
+          },
+          calendarCreate: { execute } as never,
+        },
+      )(job, token),
+    ).rejects.toBeInstanceOf(LinePushRetryableError);
+    expect(execute).toHaveBeenCalled();
+    expect(finish).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000003',
+      'confirmation-key',
+      pending.processingToken,
+      expect.any(Date),
+    );
+    expect(requeue).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000003',
+      'confirmation-key',
+      pending.processingToken,
+      expect.any(Date),
+    );
+  });
+
   it('does not treat invalid calendar input as a successful registration', async () => {
     const pushText = vi.fn().mockResolvedValue('sent' as const);
     const execute = vi.fn();
