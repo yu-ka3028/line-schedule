@@ -64,6 +64,10 @@ import {
   type GoogleOAuthCallbackDependencies,
 } from './google-oauth-callback.js';
 import { createSupabaseGoogleConnectionStore } from './google-connection-store.js';
+import { createSupabaseGoogleCalendarConnectionReader } from './google-calendar-connection-store.js';
+import { GoogleapisCalendarClient } from './google-calendar-client.js';
+import { createSupabaseScheduleLinkStore } from './schedule-link-store.js';
+import type { CalendarCreateFlowDependencies } from './calendar-create-flow.js';
 import { createSupabaseGoogleOAuthStateStore } from './google-oauth-state-store.js';
 import { GoogleapisOAuthTokenProvider } from './google-oauth-provider.js';
 import { createGoogleOAuthStart } from './google-oauth-start.js';
@@ -94,6 +98,7 @@ export type AppDependencies = {
     linePushClient?: LinePushClient;
     linePushUsageLogs?: UsageLogStore;
     lineOAuthPush?: LineOAuthPushExecutorDependencies;
+    calendarCreate?: CalendarCreateFlowDependencies;
     outbox?: LineOutboxStore;
     publisher?: QstashPublisher;
   };
@@ -267,7 +272,12 @@ export function createApp(
         // state writes, Google clients, and dynamic LINE messages.
         if (isLineAsyncProcessingEnabled() && isGoogleOAuthEnabled()) {
           if (dependencies.qstash?.lineOAuthPush) {
-            oauth = dependencies.qstash.lineOAuthPush;
+            oauth = {
+              ...dependencies.qstash.lineOAuthPush,
+              calendarCreate:
+                dependencies.qstash.lineOAuthPush.calendarCreate ??
+                dependencies.qstash.calendarCreate,
+            };
           } else {
             const oauthConfig =
               dependencies.oauth?.config ?? readGoogleOAuthConfig();
@@ -281,6 +291,16 @@ export function createApp(
                   config: oauthConfig,
                   stateStore,
                 }),
+              calendarCreate: dependencies.qstash?.calendarCreate ?? {
+                connectionReader:
+                  createSupabaseGoogleCalendarConnectionReader(),
+                scheduleLinkStore: createSupabaseScheduleLinkStore(),
+                encryptionKey,
+                googleCalendarClient: new GoogleapisCalendarClient({
+                  clientId: oauthConfig.clientId,
+                  clientSecret: oauthConfig.clientSecret,
+                }),
+              },
             };
           }
         }
