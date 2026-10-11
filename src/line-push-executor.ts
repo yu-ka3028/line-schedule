@@ -100,11 +100,7 @@ export function createLinePushExecutor(
             oauthText,
           );
         } else if (text && parseCalendarConfirmationCommand(text)) {
-          if (
-            !oauth.calendarCreate ||
-            !client.pushText ||
-            !oauth.pendingConfirmations
-          )
+          if (!client.pushText || !oauth.pendingConfirmations)
             throw new Error('line_push_text_unavailable');
           const action = parseCalendarConfirmationCommand(text);
           const now = new Date();
@@ -135,6 +131,8 @@ export function createLinePushExecutor(
               );
             }
           } else {
+            if (!oauth.calendarCreate)
+              throw new Error('line_push_text_unavailable');
             const pending = await oauth.pendingConfirmations.claimPending?.(
               event.userId,
               now,

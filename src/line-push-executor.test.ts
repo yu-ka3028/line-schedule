@@ -179,6 +179,94 @@ describe('LINE push executor opt-in outcomes', () => {
     );
   });
 
+  it('cancels without requiring calendar creation dependencies', async () => {
+    const pushText = vi.fn().mockResolvedValue('sent' as const);
+    const processingStore = oauthDependencies(
+      JSON.stringify({
+        type: 'message',
+        message: { type: 'text', text: 'キャンセル' },
+      }),
+    );
+    const pending = {
+      operationKey: 'confirmation-key',
+      status: 'pending' as const,
+    };
+    const cancel = vi.fn().mockResolvedValue(pending);
+    const store = {
+      claim: vi.fn().mockResolvedValue({
+        outcome: 'claimed' as const,
+        recipientId: 'line-user',
+        retryKey: '00000000-0000-4000-8000-000000000004',
+      }),
+      sent: vi.fn().mockResolvedValue('sent' as const),
+      fail: vi.fn(),
+    };
+
+    await expect(
+      createLinePushExecutor(
+        store,
+        { push: vi.fn(), pushText },
+        {
+          ...processingStore,
+          pendingConfirmations: {
+            getPending: vi.fn().mockResolvedValue(pending),
+            cancel,
+          } as never,
+        },
+      )(job, token),
+    ).resolves.toEqual({ outcome: 'sent' });
+    expect(cancel).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000003',
+      'confirmation-key',
+      expect.any(Date),
+    );
+    expect(pushText).toHaveBeenCalledWith(
+      'line-user',
+      '00000000-0000-4000-8000-000000000004',
+      '予定登録をキャンセルしました。',
+    );
+  });
+
+  it('makes confirmation retryable when calendar creation is unavailable', async () => {
+    const pushText = vi.fn();
+    const processingStore = oauthDependencies(
+      JSON.stringify({
+        type: 'message',
+        message: { type: 'text', text: '確認' },
+      }),
+    );
+    const claimPending = vi.fn();
+    const fail = vi.fn().mockResolvedValue('requeued' as const);
+    const store = {
+      claim: vi.fn().mockResolvedValue({
+        outcome: 'claimed' as const,
+        recipientId: 'line-user',
+        retryKey: '00000000-0000-4000-8000-000000000004',
+      }),
+      sent: vi.fn(),
+      fail,
+    };
+
+    await expect(
+      createLinePushExecutor(
+        store,
+        { push: vi.fn(), pushText },
+        {
+          ...processingStore,
+          pendingConfirmations: { claimPending } as never,
+        },
+      )(job, token),
+    ).rejects.toBeInstanceOf(LinePushRetryableError);
+    expect(claimPending).not.toHaveBeenCalled();
+    expect(pushText).not.toHaveBeenCalled();
+    expect(fail).toHaveBeenCalledWith(
+      job.jobId,
+      token,
+      '00000000-0000-4000-8000-000000000004',
+      'retryable',
+    );
+  });
+
   it('propagates the confirmation token and recovers a failed lease transition', async () => {
     const pushText = vi.fn().mockResolvedValue('sent' as const);
     const processingStore = oauthDependencies(
