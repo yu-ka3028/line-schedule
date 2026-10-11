@@ -164,22 +164,31 @@ export function createLinePushExecutor(
                   pending.operationKey,
                   oauth.calendarCreate,
                 );
-                await oauth.pendingConfirmations.finish?.(
-                  event.userId,
-                  pending.operationKey,
-                  now,
-                );
+                if (
+                  !pending.processingToken ||
+                  !(await oauth.pendingConfirmations.finish?.(
+                    event.userId,
+                    pending.operationKey,
+                    pending.processingToken,
+                    now,
+                  ))
+                ) {
+                  throw new LinePushRetryableError();
+                }
                 result = await client.pushText(
                   delivery.recipientId,
                   delivery.retryKey,
                   CALENDAR_CREATE_SUCCESS_TEXT,
                 );
               } catch (error) {
-                await oauth.pendingConfirmations.requeue?.(
-                  event.userId,
-                  pending.operationKey,
-                  new Date(),
-                );
+                if (pending.processingToken) {
+                  await oauth.pendingConfirmations.requeue?.(
+                    event.userId,
+                    pending.operationKey,
+                    pending.processingToken,
+                    new Date(),
+                  );
+                }
                 if (
                   error instanceof CalendarCreateFlowError &&
                   error.code === 'invalid_input'

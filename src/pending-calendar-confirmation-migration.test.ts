@@ -20,8 +20,10 @@ describe('pending calendar confirmations migration', () => {
       'alter table public.pending_calendar_confirmations enable row level security',
     );
     expect(migration).toContain(
-      "status in ('pending', 'confirmed', 'cancelled', 'expired')",
+      "status in ('pending', 'processing', 'retryable', 'confirmed', 'cancelled', 'expired')",
     );
+    expect(migration).toContain('processing_token uuid');
+    expect(migration).toContain("status = 'retryable'");
     expect(migration).not.toContain('title text');
   });
 
@@ -30,6 +32,8 @@ describe('pending calendar confirmations migration', () => {
     expect(migration).toContain('cancel_pending_calendar_confirmation');
     expect(migration).toContain("status = 'confirmed'");
     expect(migration).toContain('expires_at > p_now');
+    expect(migration).toContain('p_processing_token');
+    expect(migration).toContain("status = 'expired'");
     expect(migration).toContain('grant execute on function');
   });
 });

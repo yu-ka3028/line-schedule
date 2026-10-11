@@ -28,6 +28,7 @@ export type PendingCalendarConfirmation = {
   createdAt: Date;
   updatedAt: Date;
   leaseUntil?: Date;
+  processingToken?: string;
 };
 
 export interface PendingCalendarConfirmationStore {
@@ -56,8 +57,18 @@ export interface PendingCalendarConfirmationStore {
     userId: string,
     now: Date,
   ): Promise<PendingCalendarConfirmation | null>;
-  finish?(userId: string, operationKey: string, now: Date): Promise<void>;
-  requeue?(userId: string, operationKey: string, now: Date): Promise<void>;
+  finish?(
+    userId: string,
+    operationKey: string,
+    processingToken: string,
+    now: Date,
+  ): Promise<boolean>;
+  requeue?(
+    userId: string,
+    operationKey: string,
+    processingToken: string,
+    now: Date,
+  ): Promise<boolean>;
   getPending?(userId: string): Promise<PendingCalendarConfirmation | null>;
 }
 
@@ -107,6 +118,9 @@ function toRecord(
     ...(typeof row.lease_until === 'string'
       ? { leaseUntil: new Date(row.lease_until) }
       : {}),
+    ...(typeof row.processing_token === 'string'
+      ? { processingToken: row.processing_token }
+      : {}),
   };
 }
 
@@ -146,7 +160,7 @@ export class SupabasePendingCalendarConfirmationStore implements PendingCalendar
         expires_at: input.expiresAt.toISOString(),
       })
       .select(
-        'user_id,operation_key,command_ciphertext,expires_at,status,created_at,updated_at',
+        'user_id,operation_key,command_ciphertext,expires_at,status,processing_token,created_at,updated_at',
       )
       .single();
     if (error) {
@@ -167,7 +181,7 @@ export class SupabasePendingCalendarConfirmationStore implements PendingCalendar
     const { data, error } = await this.client
       .from('pending_calendar_confirmations')
       .select(
-        'user_id,operation_key,command_ciphertext,expires_at,status,created_at,updated_at,lease_until',
+        'user_id,operation_key,command_ciphertext,expires_at,status,processing_token,created_at,updated_at,lease_until',
       )
       .eq('user_id', userId)
       .eq('operation_key', operationKey)
@@ -217,7 +231,7 @@ export class SupabasePendingCalendarConfirmationStore implements PendingCalendar
     const { data, error } = await this.client
       .from('pending_calendar_confirmations')
       .select(
-        'user_id,operation_key,command_ciphertext,expires_at,status,created_at,updated_at,lease_until',
+        'user_id,operation_key,command_ciphertext,expires_at,status,processing_token,created_at,updated_at,lease_until',
       )
       .eq('user_id', userId)
       .in('status', ['pending', 'processing', 'retryable', 'confirmed'])
@@ -243,30 +257,48 @@ export class SupabasePendingCalendarConfirmationStore implements PendingCalendar
       : null;
   }
 
-  async finish(userId: string, operationKey: string, now: Date) {
+  async finish(
+    userId: string,
+    operationKey: string,
+    processingToken: string,
+    now: Date,
+  ) {
     validateIdentity(userId, operationKey);
-    const { error } = await this.client.rpc(
+    if (!UUID.test(processingToken))
+      throw new Error('invalid processing token');
+    const { data, error } = await this.client.rpc(
       'finish_pending_calendar_confirmation',
       {
         p_user_id: userId,
         p_operation_key: operationKey,
+        p_processing_token: processingToken,
         p_now: now.toISOString(),
       },
     );
     if (error) throw error;
+    return Boolean(data);
   }
 
-  async requeue(userId: string, operationKey: string, now: Date) {
+  async requeue(
+    userId: string,
+    operationKey: string,
+    processingToken: string,
+    now: Date,
+  ) {
     validateIdentity(userId, operationKey);
-    const { error } = await this.client.rpc(
+    if (!UUID.test(processingToken))
+      throw new Error('invalid processing token');
+    const { data, error } = await this.client.rpc(
       'requeue_pending_calendar_confirmation',
       {
         p_user_id: userId,
         p_operation_key: operationKey,
+        p_processing_token: processingToken,
         p_now: now.toISOString(),
       },
     );
     if (error) throw error;
+    return Boolean(data);
   }
 }
 
